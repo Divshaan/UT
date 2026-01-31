@@ -24,6 +24,14 @@
         ::-webkit-scrollbar-thumb { background: #374151; border-radius: 4px; }
         .line-clamp-2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
         .sidebar-active { background-color: #1f2937; border-left: 3px solid #DC2626; color: white; }
+        
+        /* FIX: Force all iframes to fit the responsive container */
+        .aspect-video iframe { width: 100% !important; height: 100% !important; border: none; }
+        
+        /* Filter Chip Styles */
+        .filter-chip { px-4 py-1.5 rounded-lg text-sm font-medium transition-colors border border-transparent cursor-pointer whitespace-nowrap; }
+        .filter-chip-active { background-color: #f3f4f6; color: #000; }
+        .filter-chip-inactive { background-color: #1f2937; color: #d1d5db; hover:bg-gray-700; }
     </style>
     <script src="https://unpkg.com/lucide@latest"></script>
 
@@ -53,6 +61,7 @@
         let allContent = { videos: [], posts: [], community: [] };
         let currentComments = [];
         let searchQuery = "";
+        let searchFilter = "all"; // all, videos, posts, community
         
         // --- AUTH ---
         onAuthStateChanged(auth, (user) => {
@@ -62,10 +71,10 @@
         });
 
         // --- DATA LISTENERS ---
-        // OPTIMIZATION: Added orderBy('createdAt', 'desc') to main feeds.
-        // This relies on single-field indexes which are automatic in Firestore.
         const collections = ['videos', 'posts', 'community'];
         collections.forEach(col => {
+            // Using basic query to ensure it works without complex indexes first
+            // If you created the index, you can uncomment orderBy
             const q = query(
                 collection(db, 'artifacts', appId, 'public', 'data', col), 
                 orderBy('createdAt', 'desc'), 
@@ -74,36 +83,53 @@
             
             onSnapshot(q, (snap) => {
                 allContent[col] = snap.docs.map(d => ({ id: d.id, type: col, ...d.data() }));
-                refreshView();
+                // If we are currently on a search page, refresh results when new data comes in
+                if(currentView === 'search') refreshView();
+                else if (currentView === 'home' || currentView === 'articles' || currentView === 'community') refreshView();
+            }, (err) => {
+                console.warn("Index missing for sorting, falling back to client sort", err);
+                const fallbackQ = query(collection(db, 'artifacts', appId, 'public', 'data', col), limit(50));
+                onSnapshot(fallbackQ, (snap) => {
+                     allContent[col] = snap.docs.map(d => ({ id: d.id, type: col, ...d.data() }))
+                        .sort((a,b) => (b.createdAt?.seconds||0) - (a.createdAt?.seconds||0));
+                     if(currentView === 'search' || currentView === 'home' || currentView === 'articles' || currentView === 'community') refreshView();
+                });
             });
         });
 
         // --- NAVIGATION ---
         let currentView = 'home';
-        let viewedItem = null; // For watch/read views
-        let viewedProfileId = null; // For profile view
+        let viewedItem = null;
+        let viewedProfileId = null;
 
         window.navigateTo = async (view, param = null) => {
             currentView = view;
             
-            // Sidebar UI
             document.querySelectorAll('.nav-item').forEach(el => {
                 el.classList.remove('sidebar-active', 'text-white');
                 el.classList.add('text-gray-400');
             });
+            // Highlight nav item (Search doesn't highlight any sidebar item usually)
             const active = document.getElementById(`nav-${view}`);
             if(active) { active.classList.add('sidebar-active', 'text-white'); active.classList.remove('text-gray-400'); }
 
-            // Content Sections
             document.querySelectorAll('.view-section').forEach(el => el.classList.add('hidden'));
-            
-            // Mobile Search Reset
             document.getElementById('mobile-search-bar').classList.add('hidden');
 
             if(view === 'home' || view === 'articles' || view === 'community') {
                 document.getElementById('view-feed').classList.remove('hidden');
                 refreshView();
             } 
+            else if (view === 'search') {
+                document.getElementById('view-search').classList.remove('hidden');
+                // If param is passed (query string), set it
+                if(param) {
+                    searchQuery = param;
+                    document.getElementById('search-input-desktop').value = searchQuery;
+                    document.getElementById('mobile-search-input').value = searchQuery;
+                }
+                refreshView();
+            }
             else if (view === 'studio') {
                 if(!currentUser) return window.navigateTo('auth');
                 document.getElementById('view-studio').classList.remove('hidden');
@@ -133,7 +159,6 @@
                     loadComments(param);
                 }
             }
-
             lucide.createIcons();
             if(window.innerWidth < 768) toggleSidebar(false);
         };
@@ -141,35 +166,138 @@
         function refreshView() {
             const grid = document.getElementById('feed-grid');
             const title = document.getElementById('feed-title');
-            let data = [];
             
             if(currentView === 'home') {
                 title.innerHTML = '<i data-lucide="play-circle" class="inline mr-2 text-red-600"></i>Videos';
-                data = filterData(allContent.videos);
-                renderVideos(data, grid);
+                renderVideos(allContent.videos, grid);
             } else if (currentView === 'articles') {
                 title.innerHTML = '<i data-lucide="file-text" class="inline mr-2 text-blue-500"></i>Articles';
-                data = filterData(allContent.posts);
-                renderArticles(data, grid);
+                renderArticles(allContent.posts, grid);
             } else if (currentView === 'community') {
                 title.innerHTML = '<i data-lucide="users" class="inline mr-2 text-green-500"></i>Community Buzz';
-                data = filterData(allContent.community);
-                renderCommunity(data, grid);
+                renderCommunity(allContent.community, grid);
+            } else if (currentView === 'search') {
+                renderSearchResults();
             }
         }
 
-        function filterData(list) {
-            if(!searchQuery) return list;
+        // --- SEARCH LOGIC ---
+        window.handleSearchKey = (e, val) => {
+            if(e.key === 'Enter') {
+                window.triggerSearch(val);
+            }
+        }
+
+        window.triggerSearch = (val) => {
+            if(!val || val.trim() === "") return;
+            window.navigateTo('search', val);
+        }
+
+        window.setSearchFilter = (filter) => {
+            searchFilter = filter;
+            // Update UI
+            const filters = ['all', 'videos', 'posts', 'community'];
+            filters.forEach(f => {
+                const btn = document.getElementById(`filter-btn-${f}`);
+                if(f === filter) {
+                    btn.className = "px-4 py-1.5 rounded-lg text-sm font-medium transition-colors border border-transparent cursor-pointer whitespace-nowrap bg-gray-100 text-black";
+                } else {
+                    btn.className = "px-4 py-1.5 rounded-lg text-sm font-medium transition-colors border border-transparent cursor-pointer whitespace-nowrap bg-gray-800 text-gray-300 hover:bg-gray-700";
+                }
+            });
+            renderSearchResults();
+        }
+
+        function renderSearchResults() {
+            const container = document.getElementById('search-results');
             const q = searchQuery.toLowerCase();
-            return list.filter(i => 
+            
+            // Gather all content based on filter
+            let results = [];
+            if(searchFilter === 'all') {
+                results = [...allContent.videos, ...allContent.posts, ...allContent.community];
+            } else if (searchFilter === 'videos') {
+                results = [...allContent.videos];
+            } else if (searchFilter === 'posts') {
+                results = [...allContent.posts];
+            } else if (searchFilter === 'community') {
+                results = [...allContent.community];
+            }
+
+            // Filter by Query
+            results = results.filter(i => 
                 (i.title && i.title.toLowerCase().includes(q)) || 
                 (i.content && i.content.toLowerCase().includes(q)) ||
                 (i.description && i.description.toLowerCase().includes(q)) ||
                 (i.authorName && i.authorName.toLowerCase().includes(q))
             );
+
+            // Sort by relevance (simulated by date here for consistency, but could be fancier)
+            results.sort((a,b) => (b.createdAt?.seconds||0) - (a.createdAt?.seconds||0));
+
+            if(results.length === 0) {
+                container.innerHTML = `<div class="text-center py-20 text-gray-500">
+                    <i data-lucide="search-x" class="w-12 h-12 mx-auto mb-4 opacity-50"></i>
+                    No results found for "${escapeHtml(searchQuery)}"
+                </div>`;
+            } else {
+                container.innerHTML = results.map(item => renderSearchCard(item)).join('');
+            }
+            lucide.createIcons();
         }
 
-        // --- RENDERERS ---
+        function renderSearchCard(item) {
+            // Horizontal Card Layout (YouTube Style)
+            let thumbnail = '';
+            let meta = '';
+            let action = '';
+            let typeLabel = '';
+
+            if (item.type === 'videos') {
+                const thumbUrl = getThumbnail(item.originalLink || '') || '';
+                thumbnail = thumbUrl ? `<img src="${thumbUrl}" class="w-full h-full object-cover">` : `<div class="w-full h-full flex items-center justify-center bg-gray-800"><i data-lucide="play" class="w-8 h-8 text-gray-500"></i></div>`;
+                meta = `${item.views||0} views • ${timeAgo(item.createdAt)}`;
+                action = `window.navigateTo('watch', '${item.id}')`;
+                typeLabel = 'Video';
+            } else if (item.type === 'posts') {
+                thumbnail = `<div class="w-full h-full flex items-center justify-center bg-gray-800 border-r border-gray-700"><i data-lucide="file-text" class="w-8 h-8 text-blue-500"></i></div>`;
+                meta = `Read • ${timeAgo(item.createdAt)}`;
+                action = `window.navigateTo('read', '${item.id}')`;
+                typeLabel = 'Article';
+            } else {
+                thumbnail = item.imageUrl ? `<img src="${item.imageUrl}" class="w-full h-full object-cover">` : `<div class="w-full h-full flex items-center justify-center bg-gray-800 border-r border-gray-700"><i data-lucide="users" class="w-8 h-8 text-green-500"></i></div>`;
+                meta = `Buzz • ${timeAgo(item.createdAt)}`;
+                action = `window.navigateTo('community')`; // Community doesn't have single view yet, go to feed
+                typeLabel = 'Buzz';
+            }
+
+            return `
+                <div onclick="${action}" class="flex flex-col sm:flex-row gap-4 cursor-pointer group hover:bg-gray-900/50 p-2 rounded-lg transition-colors">
+                    <!-- Thumbnail -->
+                    <div class="w-full sm:w-[360px] aspect-video flex-shrink-0 rounded-lg overflow-hidden relative bg-black">
+                        ${thumbnail}
+                        <span class="absolute bottom-1 right-1 bg-black/80 text-white text-[10px] px-1 rounded">${typeLabel}</span>
+                    </div>
+                    <!-- Details -->
+                    <div class="flex-1 py-1">
+                        <h3 class="text-white font-medium text-lg leading-tight mb-1 group-hover:text-red-500 transition-colors line-clamp-2">${escapeHtml(item.title || item.content)}</h3>
+                        <div class="text-xs text-gray-400 mb-2 flex items-center gap-2">
+                             ${meta}
+                        </div>
+                        <div class="flex items-center gap-2 mb-2">
+                            <div class="w-6 h-6 rounded-full bg-gray-700 flex items-center justify-center text-[10px] text-white">
+                                ${(item.authorName||'U')[0].toUpperCase()}
+                            </div>
+                            <span class="text-xs text-gray-400 hover:text-white">${escapeHtml(item.authorName)}</span>
+                        </div>
+                        <p class="text-sm text-gray-500 line-clamp-2">${escapeHtml(item.description || item.content)}</p>
+                    </div>
+                </div>
+            `;
+        }
+
+
+        // --- RENDERERS (Grid) ---
         function getThumbnail(url) {
             const ytMatch = url.match(/(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/);
             if(ytMatch) return `https://img.youtube.com/vi/${ytMatch[1]}/mqdefault.jpg`;
@@ -183,7 +311,7 @@
                     <div class="relative aspect-video bg-gray-900 rounded-xl overflow-hidden mb-3 border border-gray-800">
                         ${getThumbnail(v.originalLink || '') ? 
                             `<img src="${getThumbnail(v.originalLink)}" class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300">` : 
-                            `<div class="w-full h-full flex items-center justify-center text-gray-700"><i data-lucide="play" class="w-12 h-12"></i></div>`
+                            `<div class="w-full h-full flex items-center justify-center text-gray-700 bg-black"><i data-lucide="play" class="w-12 h-12"></i></div>`
                         }
                         <div class="absolute bottom-2 right-2 bg-black/80 text-white text-xs px-1.5 py-0.5 rounded font-mono">Video</div>
                     </div>
@@ -254,11 +382,10 @@
                             <i data-lucide="message-circle" class="w-4 h-4"></i> Comment
                         </button>
                     </div>
-                    <!-- Inline Comments Section for Community -->
                     <div id="comm-${p.id}" class="hidden p-4 border-t border-gray-800 bg-black/20">
                          <div id="comm-list-${p.id}" class="space-y-3 mb-3"></div>
                          <form onsubmit="window.postInlineComment(event, '${p.id}', 'community')" class="flex gap-2">
-                            <input type="text" placeholder="Reply..." class="flex-1 bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-white">
+                            <input type="text" placeholder="Reply..." class="flex-1 bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-white" autocomplete="off">
                             <button type="submit" class="text-green-500 text-sm font-medium hover:text-green-400">Post</button>
                          </form>
                     </div>
@@ -267,48 +394,29 @@
             lucide.createIcons();
         }
 
-        // --- PROFILE SYSTEM ---
         async function renderProfile(uid) {
             const container = document.getElementById('profile-content');
             container.innerHTML = '<div class="text-center py-10"><i data-lucide="loader-2" class="animate-spin w-8 h-8 text-red-600 mx-auto"></i></div>';
             lucide.createIcons();
 
-            // Fetch User Data (Simulated via Auth + Content aggregation since we don't have a users table yet)
-            // In a real app, we'd query a 'users' collection.
-            
-            // Get Content
             const myVideos = allContent.videos.filter(x => x.authorId === uid);
-            const myPosts = allContent.posts.filter(x => x.authorId === uid);
-            const myComm = allContent.community.filter(x => x.authorId === uid);
-            const totalViews = myVideos.reduce((a,b)=>a+(b.views||0),0) + myPosts.reduce((a,b)=>a+(b.views||0),0);
-            
-            // Get Follow Status
-            let isFollowing = false;
             let followerCount = 0;
+            let isFollowing = false;
             try {
                 const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'follows'), where("targetId", "==", uid));
                 const snap = await getDocs(q);
                 followerCount = snap.size;
-                if(currentUser) {
-                    const myFollow = snap.docs.find(d => d.data().followerId === currentUser.uid);
-                    if(myFollow) isFollowing = true;
-                }
+                if(currentUser && snap.docs.find(d => d.data().followerId === currentUser.uid)) isFollowing = true;
             } catch(e){}
 
-            // Get Basic Info (If it's me, use Auth, if not, use data from their latest post)
-            let name = "User";
-            let bio = "No bio available."; // We stored bio in photoURL as a hack in v1
-            
+            let name = "User", bio = "No bio available.";
             if(currentUser && currentUser.uid === uid) {
-                name = currentUser.displayName;
-                bio = currentUser.photoURL || "Welcome to my channel.";
-            } else {
-                const lastItem = [...myVideos, ...myPosts, ...myComm][0];
-                if(lastItem) name = lastItem.authorName;
+                name = currentUser.displayName; bio = currentUser.photoURL || "Welcome to my channel.";
+            } else if (myVideos.length) {
+                name = myVideos[0].authorName;
             }
 
             const isMe = currentUser && currentUser.uid === uid;
-
             document.getElementById('profile-header').innerHTML = `
                 <div class="flex flex-col md:flex-row items-center md:items-end gap-6 mb-8">
                     <div class="w-32 h-32 rounded-full bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center text-5xl font-bold text-white border-4 border-gray-950 shadow-xl">
@@ -328,15 +436,9 @@
                         }
                     </div>
                 </div>
-                
-                <div class="flex border-b border-gray-800 mb-6 overflow-x-auto">
-                    <button class="px-4 py-3 border-b-2 border-white text-white font-medium text-sm">Videos</button>
-                    <!-- Expandable in future -->
-                </div>
             `;
-
             container.innerHTML = '';
-            renderVideos(myVideos, container); // Re-use renderVideos for profile grid
+            renderVideos(myVideos, container); 
         }
 
         window.editProfile = (currentName, currentBio) => {
@@ -344,7 +446,7 @@
             if(newName) {
                 const newBio = prompt("Enter new Bio:", currentBio === "Welcome to my channel." ? "" : currentBio);
                 updateProfile(currentUser, { displayName: newName, photoURL: newBio }).then(() => {
-                    renderProfile(currentUser.uid); // Refresh
+                    renderProfile(currentUser.uid); 
                 });
             }
         };
@@ -352,33 +454,24 @@
         window.toggleFollow = async (targetId) => {
             if(!currentUser) return alert("Please login.");
             if(targetId === currentUser.uid) return alert("Can't subscribe to yourself.");
-            
-            // Check if following
             const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'follows'), 
                             where("followerId", "==", currentUser.uid), where("targetId", "==", targetId));
             const snap = await getDocs(q);
-            
             if(!snap.empty) {
-                // Unfollow
                 await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'follows', snap.docs[0].id));
             } else {
-                // Follow
                 await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'follows'), {
                     followerId: currentUser.uid, targetId: targetId, createdAt: serverTimestamp()
                 });
-                // Create Notification
                 addNotification(targetId, 'follow');
             }
-            renderProfile(targetId); // Refresh UI
+            renderProfile(targetId); 
         };
 
-        // --- COMMENTS & INTERACTIONS ---
         async function loadComments(targetId) {
             const list = document.getElementById(currentView === 'watch' ? 'watch-comments' : 'read-comments');
             list.innerHTML = '<div class="text-gray-500 text-sm">Loading comments...</div>';
             
-            // PRO FIX: Re-enable Server Side Ordering
-            // Requires Firestore Index: Click the link in console if it fails
             const q = query(
                 collection(db, 'artifacts', appId, 'public', 'data', 'comments'), 
                 where("targetId", "==", targetId),
@@ -388,7 +481,6 @@
             
             onSnapshot(q, (snap) => {
                 currentComments = snap.docs.map(d => d.data());
-                
                 list.innerHTML = currentComments.length ? currentComments.map(c => `
                     <div class="flex gap-3 mb-4">
                         <div class="w-8 h-8 rounded-full bg-gray-700 flex-shrink-0 flex items-center justify-center text-xs font-bold cursor-pointer" onclick="window.navigateTo('profile', '${c.authorId}')">
@@ -403,11 +495,13 @@
                         </div>
                     </div>
                 `).join('') : '<div class="text-sm text-gray-500">No comments yet.</div>';
-            }, (error) => {
-                console.error("Comment Error (Likely missing index):", error);
-                if(error.code === 'failed-precondition') {
-                    list.innerHTML = `<div class="text-red-500 text-xs">Admin Action Required: Check Browser Console to create Database Index.</div>`;
-                }
+            }, (err) => {
+                // Fallback client sort if index fails
+                const fq = query(collection(db, 'artifacts', appId, 'public', 'data', 'comments'), where("targetId", "==", targetId));
+                onSnapshot(fq, (snap) => {
+                    currentComments = snap.docs.map(d => d.data()).sort((a,b)=>(b.createdAt?.seconds||0)-(a.createdAt?.seconds||0));
+                     list.innerHTML = currentComments.map(c => `<div class="mb-4 text-sm text-gray-300"><b>${escapeHtml(c.authorName)}</b>: ${escapeHtml(c.text)}</div>`).join('');
+                });
             });
         }
 
@@ -424,8 +518,7 @@
                 createdAt: serverTimestamp()
             });
             input.value = '';
-            // Notify Author
-            if(viewedItem.authorId !== currentUser.uid) addNotification(viewedItem.authorId, 'comment', viewedItem.title);
+            if(viewedItem.authorId !== currentUser.uid) addNotification(viewedItem.authorId, 'comment', viewedItem.title, viewedItem.id, viewedItem.type);
         };
 
         window.postInlineComment = async (e, targetId, type) => {
@@ -434,52 +527,46 @@
             const input = e.target.querySelector('input');
             const text = input.value.trim();
             if(!text) return;
-
             await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'comments'), {
                 text, targetId, authorId: currentUser.uid, authorName: currentUser.displayName, createdAt: serverTimestamp()
             });
             input.value = '';
-            // Hacky reload for inline
             window.toggleComments(`comm-${targetId}`, true);
         };
 
         window.toggleComments = async (divId, forceOpen = false) => {
             const div = document.getElementById(divId);
-            if(!div.classList.contains('hidden') && !forceOpen) {
-                div.classList.add('hidden');
-            } else {
+            if(!div.classList.contains('hidden') && !forceOpen) { div.classList.add('hidden'); } 
+            else {
                 div.classList.remove('hidden');
-                // Fetch inline
                 const postId = divId.replace('comm-', '');
                 const container = document.getElementById(`comm-list-${postId}`);
-                // Simple query for inline, still using client sort to avoid excessive index creation for now, but could be upgraded
                 const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'comments'), where("targetId", "==", postId));
                 const snap = await getDocs(q);
-                const comms = snap.docs.map(d => d.data());
-                comms.sort((a,b) => (a.createdAt?.seconds || 0) - (b.createdAt?.seconds || 0)); 
+                const comms = snap.docs.map(d => d.data()).sort((a,b) => (a.createdAt?.seconds||0)-(b.createdAt?.seconds||0)); 
                 container.innerHTML = comms.map(c => `<p class="text-xs text-gray-300"><b>${escapeHtml(c.authorName)}</b>: ${escapeHtml(c.text)}</p>`).join('');
             }
         };
 
-        // --- NOTIFICATIONS & ACTIVITY ---
+        // --- NOTIFICATIONS FIX ---
         async function loadNotifications() {
-            // PRO FIX: Re-enable Server Side Ordering & Limit
             const q = query(
                 collection(db, 'artifacts', appId, 'public', 'data', 'notifications'), 
                 where("targetUserId", "==", currentUser.uid),
                 orderBy("createdAt", "desc"),
                 limit(20)
             );
-
             onSnapshot(q, (snap) => {
                 const list = snap.docs.map(d => d.data());
                 const badge = document.getElementById('notif-badge');
                 const container = document.getElementById('notif-list');
                 
+                // Show badge if there are notifications (Simplified logic: presence = unread)
+                if(list.length > 0) badge.classList.remove('hidden'); 
+                
                 if(list.length > 0) {
-                    badge.classList.remove('hidden');
                     container.innerHTML = list.map(n => `
-                        <div class="px-4 py-3 hover:bg-gray-800 border-b border-gray-800 last:border-0">
+                        <div onclick="window.handleNotifClick('${n.type}', '${n.contentId}', '${n.contentType}', '${n.actorId}')" class="px-4 py-3 hover:bg-gray-800 border-b border-gray-800 last:border-0 cursor-pointer">
                             <p class="text-sm text-gray-300">
                                 <span class="font-bold text-white">${escapeHtml(n.actorName)}</span> 
                                 ${n.type === 'follow' ? 'subscribed to you.' : `commented on "${escapeHtml(n.contentTitle || 'your post')}"`}
@@ -488,18 +575,21 @@
                         </div>
                     `).join('');
                 } else {
-                    badge.classList.add('hidden');
                     container.innerHTML = '<div class="p-4 text-center text-sm text-gray-500">No new activity.</div>';
                 }
-            }, (error) => {
-                console.error("Notification Error (Likely missing index):", error);
+            }, (err) => {
+                 // Fallback
+                 const fq = query(collection(db, 'artifacts', appId, 'public', 'data', 'notifications'), where("targetUserId", "==", currentUser.uid));
+                 onSnapshot(fq, (snap) => {
+                     if(!snap.empty) document.getElementById('notif-badge').classList.remove('hidden');
+                 });
             });
         }
 
-        async function addNotification(targetUserId, type, contentTitle = "") {
+        async function addNotification(targetUserId, type, contentTitle = "", contentId = null, contentType = null) {
             try {
                 await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'notifications'), {
-                    targetUserId, type, contentTitle,
+                    targetUserId, type, contentTitle, contentId, contentType,
                     actorId: currentUser.uid, actorName: currentUser.displayName,
                     createdAt: serverTimestamp(), read: false
                 });
@@ -507,12 +597,27 @@
         }
 
         window.toggleNotif = () => {
-            document.getElementById('notif-dropdown').classList.toggle('hidden');
+            const dd = document.getElementById('notif-dropdown');
+            const badge = document.getElementById('notif-badge');
+            dd.classList.toggle('hidden');
+            if(!dd.classList.contains('hidden')) {
+                badge.classList.add('hidden'); // Clear badge on open
+            }
         };
 
-        // --- PLAYER & READER LOGIC ---
+        window.handleNotifClick = (type, cId, cType, actorId) => {
+             document.getElementById('notif-dropdown').classList.add('hidden');
+             if(type === 'follow') {
+                 window.navigateTo('profile', actorId);
+             } else if (type === 'comment' && cId && cType) {
+                 if(cType === 'videos') window.navigateTo('watch', cId);
+                 else if (cType === 'posts') window.navigateTo('read', cId);
+             }
+        }
+
         function loadVideoPlayer(video) {
             updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'videos', video.id), { views: increment(1) });
+            // FORCE EMBED FIX
             document.getElementById('player-embed').innerHTML = video.embedCode;
             document.getElementById('watch-title').textContent = video.title;
             document.getElementById('watch-author').textContent = video.authorName;
@@ -531,14 +636,9 @@
             document.getElementById('read-like-btn').onclick = () => window.toggleLike('posts', article.id);
         }
 
-        // --- GLOBAL HELPERS ---
         window.handleSearch = (val) => {
-            searchQuery = val;
-            if(window.innerWidth < 768) { 
-                // Mobile Search Logic
-                if(currentView !== 'home' && currentView !== 'articles' && currentView !== 'community') window.navigateTo('home');
-            }
-            refreshView();
+            // Updated to be triggered by button or Enter key, not onkeyup for better UX
+            // Kept for mobile immediate update if needed, but standardizing on Enter is better
         };
 
         window.toggleMobileSearch = () => {
@@ -549,15 +649,11 @@
 
         window.toggleLike = async (col, id) => {
             if(!currentUser) return alert("Login to like");
-            // Simple increment (Real app needs 'likes' subcollection to prevent double votes)
             await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', col, id), { likes: increment(1) });
-            
-            // UI Update (Optimistic)
             const el = document.getElementById(currentView === 'watch' ? 'watch-like-count' : (currentView === 'read' ? 'read-like-count' : null));
             if(el) el.textContent = parseInt(el.textContent) + 1;
         };
 
-        // --- STUDIO ---
         window.switchStudioTab = (tab) => {
             ['video','article','community'].forEach(t => {
                 document.getElementById(`studio-form-${t}`).classList.add('hidden');
@@ -610,7 +706,6 @@
             finally { btn.disabled = false; btn.textContent = "Publish"; }
         };
 
-        // --- AUTH UI ---
         window.handleAuth = async (isLogin) => {
             const email = document.getElementById('auth-email').value;
             const pass = document.getElementById('auth-pass').value;
@@ -646,7 +741,6 @@
             }
         }
 
-        // --- UTILS ---
         window.toggleSidebar = (force) => {
             const sb = document.getElementById('sidebar');
             const ov = document.getElementById('sidebar-overlay');
@@ -705,8 +799,11 @@
                 <button onclick="window.toggleSidebar()" class="md:hidden text-white"><i data-lucide="menu" class="w-6 h-6"></i></button>
                 <!-- Desktop Search -->
                 <div class="hidden md:flex relative w-96 max-w-full">
-                    <input type="text" onkeyup="window.handleSearch(this.value)" placeholder="Search..." class="w-full bg-gray-900 border border-gray-800 rounded-full py-2 pl-10 pr-4 text-sm focus:border-red-600 outline-none">
+                    <input id="search-input-desktop" type="text" onkeypress="window.handleSearchKey(event, this.value)" placeholder="Search..." class="w-full bg-gray-900 border border-gray-800 rounded-full py-2 pl-10 pr-10 text-sm focus:border-red-600 outline-none" autocomplete="off">
                     <i data-lucide="search" class="absolute left-3 top-2.5 w-4 h-4 text-gray-500"></i>
+                    <button onclick="window.triggerSearch(document.getElementById('search-input-desktop').value)" class="absolute right-3 top-2 text-gray-400 hover:text-white">
+                        <i data-lucide="arrow-right" class="w-4 h-4"></i>
+                    </button>
                 </div>
             </div>
             
@@ -728,7 +825,12 @@
 
         <!-- Mobile Search Bar -->
         <div id="mobile-search-bar" class="hidden p-4 bg-gray-900 border-b border-gray-800 md:hidden">
-            <input id="mobile-search-input" type="text" onkeyup="window.handleSearch(this.value)" placeholder="Search UT..." class="w-full bg-black border border-gray-700 rounded-lg p-2 text-white outline-none focus:border-red-600">
+            <div class="relative">
+                <input id="mobile-search-input" type="text" onkeypress="window.handleSearchKey(event, this.value)" placeholder="Search UT..." class="w-full bg-black border border-gray-700 rounded-lg p-2 pl-4 pr-10 text-white outline-none focus:border-red-600" autocomplete="off">
+                <button onclick="window.triggerSearch(document.getElementById('mobile-search-input').value)" class="absolute right-2 top-2 text-gray-400">
+                    <i data-lucide="search" class="w-5 h-5"></i>
+                </button>
+            </div>
         </div>
 
         <main class="flex-grow p-4 lg:p-6 w-full max-w-7xl mx-auto">
@@ -737,6 +839,17 @@
             <section id="view-feed" class="view-section">
                 <h2 id="feed-title" class="text-xl font-bold mb-6 flex items-center"></h2>
                 <div id="feed-grid"></div>
+            </section>
+            
+            <!-- SEARCH RESULTS (NEW) -->
+            <section id="view-search" class="view-section hidden max-w-4xl mx-auto">
+                <div class="flex gap-2 mb-6 overflow-x-auto pb-2 scrollbar-hide">
+                    <button id="filter-btn-all" onclick="window.setSearchFilter('all')" class="px-4 py-1.5 rounded-lg text-sm font-medium transition-colors border border-transparent cursor-pointer whitespace-nowrap bg-gray-100 text-black">All</button>
+                    <button id="filter-btn-videos" onclick="window.setSearchFilter('videos')" class="px-4 py-1.5 rounded-lg text-sm font-medium transition-colors border border-transparent cursor-pointer whitespace-nowrap bg-gray-800 text-gray-300 hover:bg-gray-700">Videos</button>
+                    <button id="filter-btn-posts" onclick="window.setSearchFilter('posts')" class="px-4 py-1.5 rounded-lg text-sm font-medium transition-colors border border-transparent cursor-pointer whitespace-nowrap bg-gray-800 text-gray-300 hover:bg-gray-700">Articles</button>
+                    <button id="filter-btn-community" onclick="window.setSearchFilter('community')" class="px-4 py-1.5 rounded-lg text-sm font-medium transition-colors border border-transparent cursor-pointer whitespace-nowrap bg-gray-800 text-gray-300 hover:bg-gray-700">Buzz</button>
+                </div>
+                <div id="search-results" class="space-y-4"></div>
             </section>
 
             <!-- PROFILE -->
@@ -764,7 +877,7 @@
                         <!-- Comments -->
                         <h3 class="font-bold text-white mb-4">Comments</h3>
                         <form onsubmit="window.postComment(event)" class="flex gap-2 mb-6">
-                            <input id="watch-comment-input" type="text" placeholder="Add a comment..." class="flex-1 bg-transparent border-b border-gray-700 focus:border-white outline-none py-2 text-sm text-white">
+                            <input id="watch-comment-input" type="text" placeholder="Add a comment..." class="flex-1 bg-transparent border-b border-gray-700 focus:border-white outline-none py-2 text-sm text-white" autocomplete="off">
                             <button type="submit" class="text-gray-400 hover:text-white text-sm font-medium">Comment</button>
                         </form>
                         <div id="watch-comments" class="space-y-4"></div>
@@ -787,7 +900,7 @@
                 <div class="border-t border-gray-800 pt-8">
                     <h3 class="font-bold text-white mb-4">Discussion</h3>
                     <form onsubmit="window.postComment(event)" class="flex gap-2 mb-6">
-                        <input id="read-comment-input" type="text" placeholder="Share your thoughts..." class="flex-1 bg-gray-900 border border-gray-800 rounded px-4 py-2 text-sm text-white focus:border-blue-600 outline-none">
+                        <input id="read-comment-input" type="text" placeholder="Share your thoughts..." class="flex-1 bg-gray-900 border border-gray-800 rounded px-4 py-2 text-sm text-white focus:border-blue-600 outline-none" autocomplete="off">
                         <button type="submit" class="bg-blue-600 text-white px-4 py-2 rounded text-sm font-medium hover:bg-blue-700">Post</button>
                     </form>
                     <div id="read-comments" class="space-y-4"></div>
@@ -805,19 +918,19 @@
                     </div>
                     <div class="p-6">
                         <div id="studio-form-video">
-                            <input id="inp-vid-title" class="w-full bg-gray-950 border border-gray-800 rounded p-3 mb-3 text-white" placeholder="Video Title">
-                            <input id="inp-vid-url" class="w-full bg-gray-950 border border-gray-800 rounded p-3 mb-3 text-white" placeholder="YouTube Link (e.g. https://youtu.be/...)">
-                            <textarea id="inp-vid-desc" class="w-full bg-gray-950 border border-gray-800 rounded p-3 mb-4 text-white" rows="3" placeholder="Description"></textarea>
+                            <input id="inp-vid-title" class="w-full bg-gray-950 border border-gray-800 rounded p-3 mb-3 text-white" placeholder="Video Title" autocomplete="off">
+                            <input id="inp-vid-url" class="w-full bg-gray-950 border border-gray-800 rounded p-3 mb-3 text-white" placeholder="YouTube Link (e.g. https://youtu.be/...)" autocomplete="off">
+                            <textarea id="inp-vid-desc" class="w-full bg-gray-950 border border-gray-800 rounded p-3 mb-4 text-white" rows="3" placeholder="Description" autocomplete="off"></textarea>
                             <button id="btn-pub-video" onclick="window.publish('video')" class="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-3 rounded">Publish Video</button>
                         </div>
                         <div id="studio-form-article" class="hidden">
-                            <input id="inp-art-title" class="w-full bg-gray-950 border border-gray-800 rounded p-3 mb-3 text-white" placeholder="Headline">
-                            <textarea id="inp-art-content" class="w-full bg-gray-950 border border-gray-800 rounded p-3 mb-4 text-white" rows="10" placeholder="Content..."></textarea>
+                            <input id="inp-art-title" class="w-full bg-gray-950 border border-gray-800 rounded p-3 mb-3 text-white" placeholder="Headline" autocomplete="off">
+                            <textarea id="inp-art-content" class="w-full bg-gray-950 border border-gray-800 rounded p-3 mb-4 text-white" rows="10" placeholder="Content..." autocomplete="off"></textarea>
                             <button id="btn-pub-article" onclick="window.publish('article')" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded">Publish Article</button>
                         </div>
                         <div id="studio-form-community" class="hidden">
-                            <textarea id="inp-comm-text" class="w-full bg-gray-950 border border-gray-800 rounded p-3 mb-3 text-white" rows="3" placeholder="What's happening?"></textarea>
-                            <input id="inp-comm-img" class="w-full bg-gray-950 border border-gray-800 rounded p-3 mb-4 text-white" placeholder="Image URL (Optional)">
+                            <textarea id="inp-comm-text" class="w-full bg-gray-950 border border-gray-800 rounded p-3 mb-3 text-white" rows="3" placeholder="What's happening?" autocomplete="off"></textarea>
+                            <input id="inp-comm-img" class="w-full bg-gray-950 border border-gray-800 rounded p-3 mb-4 text-white" placeholder="Image URL (Optional)" autocomplete="off">
                             <button id="btn-pub-community" onclick="window.publish('community')" class="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 rounded">Post Buzz</button>
                         </div>
                     </div>
@@ -828,13 +941,16 @@
             <section id="view-auth" class="view-section hidden flex items-center justify-center min-h-[60vh]">
                 <div class="bg-gray-900 p-8 rounded-xl border border-gray-800 w-full max-w-md text-center shadow-2xl">
                     <h2 class="text-2xl font-bold mb-6">Welcome to UT</h2>
-                    <input id="auth-name" class="w-full bg-black border border-gray-700 rounded p-3 mb-3 text-white" placeholder="Username (Sign up only)">
-                    <input id="auth-email" class="w-full bg-black border border-gray-700 rounded p-3 mb-3 text-white" type="email" placeholder="Email">
-                    <input id="auth-pass" class="w-full bg-black border border-gray-700 rounded p-3 mb-6 text-white" type="password" placeholder="Password">
-                    <div class="grid grid-cols-2 gap-4">
-                        <button onclick="window.handleAuth(true)" class="bg-gray-700 text-white py-2 rounded">Login</button>
-                        <button onclick="window.handleAuth(false)" class="bg-red-600 text-white py-2 rounded">Sign Up</button>
-                    </div>
+                    <!-- FIXED: Wrapped in form to prevent autocomplete everywhere else -->
+                    <form onsubmit="return false;">
+                        <input id="auth-name" class="w-full bg-black border border-gray-700 rounded p-3 mb-3 text-white" placeholder="Username (Sign up only)" autocomplete="username">
+                        <input id="auth-email" class="w-full bg-black border border-gray-700 rounded p-3 mb-3 text-white" type="email" placeholder="Email" autocomplete="email">
+                        <input id="auth-pass" class="w-full bg-black border border-gray-700 rounded p-3 mb-6 text-white" type="password" placeholder="Password" autocomplete="current-password">
+                        <div class="grid grid-cols-2 gap-4">
+                            <button onclick="window.handleAuth(true)" class="bg-gray-700 text-white py-2 rounded">Login</button>
+                            <button onclick="window.handleAuth(false)" class="bg-red-600 text-white py-2 rounded">Sign Up</button>
+                        </div>
+                    </form>
                 </div>
             </section>
         </main>
