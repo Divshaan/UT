@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Uncensored Truth (UT)</title>
     
-    <!-- Tailwind CSS (Styling) -->
+    <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = {
@@ -13,10 +13,7 @@
             theme: {
                 extend: {
                     colors: {
-                        red: {
-                            600: '#DC2626',
-                            700: '#B91C1C',
-                        }
+                        red: { 600: '#DC2626', 700: '#B91C1C' }
                     }
                 }
             }
@@ -29,11 +26,10 @@
     <!-- Firebase SDKs -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, updateProfile, signInWithCustomToken, signInAnonymously } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, collection, addDoc, onSnapshot, doc, deleteDoc, serverTimestamp, query, orderBy } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, updateProfile } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, addDoc, onSnapshot, doc, deleteDoc, updateDoc, increment, serverTimestamp, query, where, getDocs, setDoc, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // --- FIREBASE CONFIGURATION ---
-        // These are your specific keys for the Uncensored Truth project.
         const firebaseConfig = {
             apiKey: "AIzaSyAxBrWfKcq0GoK21-BeocsEbDdf24Q5mi8",
             authDomain: "uncensored-truth.firebaseapp.com",
@@ -44,85 +40,172 @@
             measurementId: "G-6KQM4RHWY6"
         };
 
-        // Initialize Firebase
         const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
         const db = getFirestore(app);
-        
-        // This keeps data organized in your database
         const appId = 'uncensored-truth-live';
 
-        // State variables
+        // --- GLOBAL STATE ---
         let currentUser = null;
         let videos = [];
         let posts = [];
         let listenersStarted = false;
+        
+        // Filtering & Sorting State
+        let searchTerm = "";
+        let sortOption = "latest"; // 'latest', 'views', 'likes'
 
-        // --- AUTH & DATA INITIALIZATION ---
-        const initApp = async () => {
-            // We are using your own Firebase keys, so we rely on standard persistence.
-            // The onAuthStateChanged listener below will handle the login state automatically.
-        };
-
-        initApp();
-
-        // Listen for user login/logout
+        // --- AUTH ---
         onAuthStateChanged(auth, (user) => {
             currentUser = user;
             updateUI();
             
             const isAnonymous = user?.isAnonymous;
-
             if (user && !isAnonymous) {
-                // Logged in
                 document.getElementById('nav-user-section').classList.remove('hidden');
                 document.getElementById('nav-auth-section').classList.add('hidden');
             } else {
-                // Guest / Not logged in
                 document.getElementById('nav-user-section').classList.add('hidden');
                 document.getElementById('nav-auth-section').classList.remove('hidden');
             }
 
-            // Start loading data once we know who the user is (or isn't)
             if (!listenersStarted) {
                 startDataListeners();
                 listenersStarted = true;
             }
         });
 
-        // --- DATA LOGIC ---
-        
+        // --- DATA LISTENERS ---
         function startDataListeners() {
             // Fetch Videos
-            const qVideos = collection(db, 'artifacts', appId, 'public', 'data', 'videos');
-            onSnapshot(qVideos, (snapshot) => {
+            onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'videos'), (snapshot) => {
                 videos = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                // Sort by time (newest first)
-                videos.sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
-                renderHome();
-            }, (error) => {
-                console.log("Database connection active.");
+                refreshContent();
             });
 
-            // Fetch Blog Posts
-            const qPosts = collection(db, 'artifacts', appId, 'public', 'data', 'posts');
-            onSnapshot(qPosts, (snapshot) => {
+            // Fetch Posts
+            onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'posts'), (snapshot) => {
                 posts = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                posts.sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
-                renderBlog();
+                refreshContent();
             });
         }
 
-        // --- RENDER FUNCTIONS ---
+        // --- CONTENT PROCESSING (Search & Sort) ---
+        function refreshContent() {
+            // Filter and Sort Videos
+            let filteredVideos = videos.filter(v => {
+                const term = searchTerm.toLowerCase();
+                const inTitle = v.title?.toLowerCase().includes(term);
+                const inDesc = v.description?.toLowerCase().includes(term);
+                const inTags = v.tags?.some(tag => tag.toLowerCase().includes(term));
+                return !term || inTitle || inDesc || inTags;
+            });
+            filteredVideos = applySort(filteredVideos);
+            renderHome(filteredVideos);
 
-        function renderHome() {
+            // Filter and Sort Posts
+            let filteredPosts = posts.filter(p => {
+                const term = searchTerm.toLowerCase();
+                const inTitle = p.title?.toLowerCase().includes(term);
+                const inContent = p.content?.toLowerCase().includes(term);
+                return !term || inTitle || inContent;
+            });
+            filteredPosts = applySort(filteredPosts);
+            renderBlog(filteredPosts);
+        }
+
+        function applySort(items) {
+            return items.sort((a, b) => {
+                if (sortOption === 'views') return (b.views || 0) - (a.views || 0);
+                if (sortOption === 'likes') return (b.likes || 0) - (a.likes || 0);
+                // Default: Latest
+                return (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0);
+            });
+        }
+
+        // --- GLOBAL FUNCTIONS ---
+
+        window.setSearch = (val) => {
+            searchTerm = val;
+            refreshContent();
+        }
+
+        window.setSort = (val) => {
+            sortOption = val;
+            refreshContent();
+        }
+
+        // --- INTERACTION LOGIC (Likes, Follows, Comments) ---
+
+        window.toggleLike = async (collectionName, id) => {
+            if (!currentUser || currentUser.isAnonymous) return alert("Please login to like.");
+            const likeRef = doc(db, 'artifacts', appId, 'public', 'data', 'interactions', `${currentUser.uid}_like_${id}`);
+            const itemRef = doc(db, 'artifacts', appId, 'public', 'data', collectionName, id);
+
+            try {
+                const likeDoc = await getDoc(likeRef);
+                if (likeDoc.exists()) {
+                    // Unlike
+                    await deleteDoc(likeRef);
+                    await updateDoc(itemRef, { likes: increment(-1) });
+                } else {
+                    // Like
+                    await setDoc(likeRef, { type: 'like', userId: currentUser.uid, targetId: id });
+                    await updateDoc(itemRef, { likes: increment(1) });
+                }
+                // UI updates via snapshot listener automatically
+            } catch (err) { console.error(err); }
+        };
+
+        window.toggleFollow = async (authorId) => {
+            if (!currentUser || currentUser.isAnonymous) return alert("Please login to follow.");
+            if (authorId === currentUser.uid) return alert("You cannot follow yourself.");
+
+            const followRef = doc(db, 'artifacts', appId, 'public', 'data', 'follows', `${currentUser.uid}_${authorId}`);
+            const btn = document.getElementById('follow-btn');
+
+            try {
+                const docSnap = await getDoc(followRef);
+                if (docSnap.exists()) {
+                    await deleteDoc(followRef);
+                    if(btn) { btn.textContent = "Follow"; btn.classList.replace('bg-gray-600', 'bg-red-600'); }
+                } else {
+                    await setDoc(followRef, { followerId: currentUser.uid, followedId: authorId });
+                    if(btn) { btn.textContent = "Following"; btn.classList.replace('bg-red-600', 'bg-gray-600'); }
+                }
+            } catch (err) { console.error(err); }
+        };
+
+        window.postComment = async (e, targetId) => {
+            e.preventDefault();
+            if (!currentUser || currentUser.isAnonymous) return alert("Please login to comment.");
+            
+            const input = document.getElementById('comment-input');
+            const text = input.value.trim();
+            if (!text) return;
+
+            try {
+                await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'comments'), {
+                    targetId: targetId,
+                    text: text,
+                    authorId: currentUser.uid,
+                    authorName: currentUser.displayName || 'Anonymous',
+                    createdAt: serverTimestamp()
+                });
+                input.value = "";
+                // Comments update via separate listener in viewVideo/viewPost
+            } catch (err) { console.error(err); }
+        };
+
+        // --- RENDERERS ---
+
+        function renderHome(items) {
             const container = document.getElementById('video-grid');
-            if (videos.length === 0) {
-                container.innerHTML = '<div class="col-span-full text-center text-gray-500 py-10">No videos yet. Be the first to upload!</div>';
+            if (items.length === 0) {
+                container.innerHTML = '<div class="col-span-full text-center text-gray-500 py-10">No videos found.</div>';
                 return;
             }
-            
-            container.innerHTML = videos.map(v => `
+            container.innerHTML = items.map(v => `
                 <div onclick="window.viewVideo('${v.id}')" class="bg-gray-800 rounded-lg overflow-hidden cursor-pointer hover:ring-2 hover:ring-red-600 transition-all shadow-lg group">
                     <div class="aspect-video bg-black flex items-center justify-center relative">
                         <i data-lucide="play" class="h-12 w-12 text-gray-600 group-hover:text-red-500 transition-colors"></i>
@@ -130,8 +213,12 @@
                     <div class="p-4">
                         <h3 class="text-white font-bold truncate text-lg">${escapeHtml(v.title)}</h3>
                         <p class="text-gray-400 text-sm mt-1">${escapeHtml(v.authorName || 'Anonymous')}</p>
-                        <div class="flex items-center mt-2 text-xs text-gray-500">
-                           <span>${v.platform || 'External'}</span>
+                        <div class="flex items-center mt-2 text-xs text-gray-500 space-x-3">
+                           <span><i data-lucide="eye" class="inline w-3 h-3"></i> ${v.views || 0}</span>
+                           <span><i data-lucide="heart" class="inline w-3 h-3"></i> ${v.likes || 0}</span>
+                        </div>
+                        <div class="mt-2 flex flex-wrap gap-1">
+                            ${(v.tags || []).slice(0,3).map(t => `<span class="text-[10px] bg-gray-700 px-1 rounded text-gray-300">#${escapeHtml(t)}</span>`).join('')}
                         </div>
                     </div>
                 </div>
@@ -139,38 +226,40 @@
             lucide.createIcons();
         }
 
-        function renderBlog() {
+        function renderBlog(items) {
             const container = document.getElementById('blog-list');
-            if (posts.length === 0) {
-                container.innerHTML = '<div class="text-center text-gray-500 py-10">No articles yet. Start writing!</div>';
+            if (items.length === 0) {
+                container.innerHTML = '<div class="text-center text-gray-500 py-10">No articles found.</div>';
                 return;
             }
-
-            container.innerHTML = posts.map(p => `
+            container.innerHTML = items.map(p => `
                 <div onclick="window.viewPost('${p.id}')" class="bg-gray-800 rounded-lg p-6 hover:bg-gray-750 transition-colors cursor-pointer border border-gray-700 hover:border-red-600/50 mb-4">
-                    <h3 class="text-xl font-bold text-white mb-2">${escapeHtml(p.title)}</h3>
+                    <div class="flex justify-between items-start">
+                        <h3 class="text-xl font-bold text-white mb-2">${escapeHtml(p.title)}</h3>
+                        <div class="flex items-center text-xs text-gray-500 space-x-2">
+                            <span><i data-lucide="eye" class="inline w-3 h-3"></i> ${p.views || 0}</span>
+                            <span><i data-lucide="heart" class="inline w-3 h-3"></i> ${p.likes || 0}</span>
+                        </div>
+                    </div>
                     <div class="flex items-center text-sm text-gray-400 mb-4">
                         <span class="mr-4 text-red-400">@${escapeHtml(p.authorName || 'Anonymous')}</span>
                         <span>${p.createdAt?.toDate ? new Date(p.createdAt.toDate()).toLocaleDateString() : 'Just now'}</span>
                     </div>
                     <p class="text-gray-300 line-clamp-3 leading-relaxed">${escapeHtml(p.content)}</p>
-                    <div class="mt-4 text-red-500 text-sm font-medium hover:text-red-300">Read full article →</div>
                 </div>
             `).join('');
+            lucide.createIcons();
         }
 
-        // --- GLOBAL FUNCTIONS ---
+        // --- VIEWS ---
 
-        window.navigateTo = (viewId) => {
-            document.querySelectorAll('.view-section').forEach(el => el.classList.add('hidden'));
-            document.getElementById(viewId).classList.remove('hidden');
-            lucide.createIcons();
-        };
-
-        window.viewVideo = (id) => {
+        window.viewVideo = async (id) => {
             const video = videos.find(v => v.id === id);
             if (!video) return;
-            
+
+            // Increment View Count
+            try { updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'videos', id), { views: increment(1) }); } catch(e){}
+
             const playerContainer = document.getElementById('player-container');
             playerContainer.innerHTML = video.embedCode; 
             
@@ -178,207 +267,170 @@
             document.getElementById('video-author').textContent = video.authorName || 'Anonymous';
             document.getElementById('video-desc').textContent = video.description;
             
+            // Interaction Buttons
+            const actions = document.getElementById('video-actions');
+            actions.innerHTML = `
+                <button onclick="window.toggleLike('videos', '${id}')" class="flex items-center space-x-1 text-gray-300 hover:text-red-500">
+                    <i data-lucide="heart" class="w-5 h-5"></i> <span>${video.likes || 0}</span>
+                </button>
+                <button id="follow-btn" onclick="window.toggleFollow('${video.authorId}')" class="ml-4 px-3 py-1 bg-red-600 text-white rounded text-sm hover:bg-red-700">Follow</button>
+            `;
+            
+            // Tags
+            document.getElementById('video-tags').innerHTML = (video.tags || []).map(t => `<span class="bg-gray-800 border border-gray-700 px-2 py-1 rounded text-xs text-gray-300">#${escapeHtml(t)}</span>`).join('');
+
+            // Load Comments
+            loadComments(id);
+
             window.navigateTo('video-view');
         };
 
-        window.viewPost = (id) => {
+        window.viewPost = async (id) => {
             const post = posts.find(p => p.id === id);
             if (!post) return;
+
+            // Increment View
+            try { updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'posts', id), { views: increment(1) }); } catch(e){}
 
             document.getElementById('post-title').textContent = post.title;
             document.getElementById('post-meta').textContent = `By ${post.authorName || 'Anonymous'} • ${post.createdAt?.toDate ? new Date(post.createdAt.toDate()).toLocaleDateString() : 'Just now'}`;
             document.getElementById('post-content').textContent = post.content;
+            
+            // Like/Follow for Post
+            const actions = document.getElementById('post-actions');
+            actions.innerHTML = `
+                <button onclick="window.toggleLike('posts', '${id}')" class="flex items-center space-x-1 text-gray-300 hover:text-red-500">
+                    <i data-lucide="heart" class="w-5 h-5"></i> <span>${post.likes || 0} Likes</span>
+                </button>
+                <button id="follow-btn-post" onclick="window.toggleFollow('${post.authorId}')" class="ml-4 px-3 py-1 bg-red-600 text-white rounded text-sm hover:bg-red-700">Follow Author</button>
+            `;
 
+            loadComments(id);
             window.navigateTo('post-view');
         }
 
-        window.handleLogin = async (e) => {
-            e.preventDefault();
-            const email = document.getElementById('auth-email').value;
-            const password = document.getElementById('auth-pass').value;
-            const errorDiv = document.getElementById('auth-error');
+        // --- COMMENTS SYSTEM ---
+        let commentsUnsubscribe = null;
+        function loadComments(targetId) {
+            if (commentsUnsubscribe) commentsUnsubscribe();
             
-            try {
-                await signInWithEmailAndPassword(auth, email, password);
-                document.getElementById('auth-form').reset();
-                window.navigateTo('home-view');
-            } catch (err) {
-                errorDiv.textContent = err.message;
-                errorDiv.classList.remove('hidden');
-            }
-        };
+            const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'comments'), where("targetId", "==", targetId));
+            const list = document.getElementById('comments-list');
+            const form = document.getElementById('comment-form-container');
+            
+            // Render Form
+            form.innerHTML = `
+                <form onsubmit="window.postComment(event, '${targetId}')" class="flex gap-2">
+                    <input id="comment-input" type="text" placeholder="Add a comment..." class="flex-1 bg-gray-900 border border-gray-700 rounded p-2 text-white focus:outline-none focus:border-red-500">
+                    <button type="submit" class="bg-gray-800 text-white px-4 py-2 rounded hover:bg-gray-700">Post</button>
+                </form>
+            `;
 
-        window.handleSignup = async () => {
-             const email = document.getElementById('auth-email').value;
-             const password = document.getElementById('auth-pass').value;
-             const username = document.getElementById('auth-username').value;
-             const errorDiv = document.getElementById('auth-error');
-
-             if(!username) {
-                 errorDiv.textContent = "Username required for sign up";
-                 errorDiv.classList.remove('hidden');
-                 return;
-             }
-
-             try {
-                const cred = await createUserWithEmailAndPassword(auth, email, password);
-                await updateProfile(cred.user, { displayName: username });
-                document.getElementById('auth-form').reset();
-                window.navigateTo('home-view');
-             } catch (err) {
-                errorDiv.textContent = err.message;
-                errorDiv.classList.remove('hidden');
-             }
+            commentsUnsubscribe = onSnapshot(q, (snapshot) => {
+                const comments = snapshot.docs.map(doc => doc.data()).sort((a,b) => (b.createdAt?.seconds||0) - (a.createdAt?.seconds||0));
+                list.innerHTML = comments.map(c => `
+                    <div class="bg-gray-900 p-3 rounded border border-gray-800 mb-2">
+                        <div class="flex justify-between">
+                            <span class="font-bold text-sm text-gray-300">${escapeHtml(c.authorName)}</span>
+                            <span class="text-xs text-gray-500">${c.createdAt?.toDate ? new Date(c.createdAt.toDate()).toLocaleDateString() : ''}</span>
+                        </div>
+                        <p class="text-gray-400 text-sm mt-1">${escapeHtml(c.text)}</p>
+                    </div>
+                `).join('');
+                if(comments.length === 0) list.innerHTML = '<p class="text-gray-600 text-sm italic">No comments yet.</p>';
+            });
         }
 
+        // --- UPLOAD HELPER ---
         window.handleUploadVideo = async (e) => {
             e.preventDefault();
-            if(!currentUser || currentUser.isAnonymous) return alert("Please login to upload");
+            if(!currentUser || currentUser.isAnonymous) return alert("Please login.");
 
             const title = document.getElementById('vid-title').value;
             const desc = document.getElementById('vid-desc').value;
-            const embed = document.getElementById('vid-embed').value;
+            const rawInput = document.getElementById('vid-embed').value;
+            const tagsInput = document.getElementById('vid-tags').value;
             const btn = document.getElementById('vid-submit-btn');
 
-            if(!title || !embed) return alert("Title and Embed Code required");
+            if(!title || !rawInput) return alert("Title and Link required");
+            btn.disabled = true; btn.textContent = "Publishing...";
 
-            btn.disabled = true;
-            btn.textContent = "Publishing...";
+            // Process Tags
+            const tags = tagsInput.split(',').map(t => t.trim()).filter(t => t);
+
+            // Process Link
+            const ytRegex = /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/;
+            const ytMatch = rawInput.match(ytRegex);
+            let finalEmbed = rawInput;
+            let platform = 'Other';
+
+            if (ytMatch && ytMatch[1]) {
+                finalEmbed = `<iframe width="100%" height="100%" src="https://www.youtube.com/embed/${ytMatch[1]}" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>`;
+                platform = 'YouTube';
+            } else if (rawInput.includes('<iframe')) {
+                finalEmbed = rawInput.replace(/width="\d+"/, 'width="100%"').replace(/height="\d+"/, 'height="100%"');
+            }
 
             try {
                 await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'videos'), {
-                    title,
-                    description: desc,
-                    embedCode: embed,
-                    authorId: currentUser.uid,
-                    authorName: currentUser.displayName || 'Anonymous',
-                    createdAt: serverTimestamp(),
-                    platform: embed.includes('youtube') ? 'YouTube' : 'Other'
+                    title, description: desc, embedCode: finalEmbed,
+                    originalLink: rawInput, tags, views: 0, likes: 0,
+                    authorId: currentUser.uid, authorName: currentUser.displayName || 'Anonymous',
+                    createdAt: serverTimestamp(), platform
                 });
                 e.target.reset();
                 window.navigateTo('home-view');
-            } catch (err) {
-                console.error(err);
-                alert("Upload failed: " + err.message);
-            } finally {
-                btn.disabled = false;
-                btn.textContent = "Publish Video";
-            }
+            } catch (err) { alert("Error: " + err.message); } 
+            finally { btn.disabled = false; btn.textContent = "Publish Video"; }
         };
 
-        window.handleUploadPost = async (e) => {
+        // --- NAVIGATION ---
+        window.navigateTo = (viewId) => {
+            document.querySelectorAll('.view-section').forEach(el => el.classList.add('hidden'));
+            document.getElementById(viewId).classList.remove('hidden');
+            lucide.createIcons();
+        };
+
+        // --- AUTH FORMS ---
+        window.handleLogin = async (e) => {
             e.preventDefault();
-            if(!currentUser || currentUser.isAnonymous) return alert("Please login to post");
-
-            const title = document.getElementById('post-form-title').value;
-            const content = document.getElementById('post-form-content').value;
-            const btn = document.getElementById('post-submit-btn');
-
-            btn.disabled = true;
-            btn.textContent = "Publishing...";
-
             try {
-                await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'posts'), {
-                    title,
-                    content,
-                    authorId: currentUser.uid,
-                    authorName: currentUser.displayName || 'Anonymous',
-                    createdAt: serverTimestamp()
-                });
-                e.target.reset();
-                window.navigateTo('blog-view');
-            } catch (err) {
-                console.error(err);
-                alert("Upload failed: " + err.message);
-            } finally {
-                btn.disabled = false;
-                btn.textContent = "Publish Article";
-            }
+                await signInWithEmailAndPassword(auth, document.getElementById('auth-email').value, document.getElementById('auth-pass').value);
+                document.getElementById('auth-form').reset();
+                window.navigateTo('home-view');
+            } catch (err) { document.getElementById('auth-error').textContent = err.message; document.getElementById('auth-error').classList.remove('hidden'); }
         };
 
-        window.handleLogout = () => {
-            signOut(auth);
-            window.navigateTo('home-view');
+        window.handleSignup = async () => {
+             const user = document.getElementById('auth-username').value;
+             if(!user) return;
+             try {
+                const cred = await createUserWithEmailAndPassword(auth, document.getElementById('auth-email').value, document.getElementById('auth-pass').value);
+                await updateProfile(cred.user, { displayName: user });
+                document.getElementById('auth-form').reset();
+                window.navigateTo('home-view');
+             } catch (err) { document.getElementById('auth-error').textContent = err.message; document.getElementById('auth-error').classList.remove('hidden'); }
         }
 
         window.toggleAuthMode = () => {
             const title = document.getElementById('auth-title');
-            const usernameGroup = document.getElementById('username-group');
-            const btn = document.getElementById('auth-submit-btn');
-            const toggleText = document.getElementById('auth-toggle-text');
-            const toggleBtn = document.getElementById('auth-toggle-btn');
-            
             if(title.textContent === 'Login') {
-                // Switch to Signup
                 title.textContent = 'Sign Up';
-                usernameGroup.classList.remove('hidden');
-                btn.textContent = 'Create Account';
-                btn.onclick = (e) => { e.preventDefault(); window.handleSignup(); }
-                toggleText.textContent = 'Already have an account?';
-                toggleBtn.textContent = 'Login';
+                document.getElementById('username-group').classList.remove('hidden');
+                document.getElementById('auth-submit-btn').textContent = 'Create Account';
+                document.getElementById('auth-submit-btn').onclick = (e) => { e.preventDefault(); window.handleSignup(); }
             } else {
-                // Switch to Login
                 title.textContent = 'Login';
-                usernameGroup.classList.add('hidden');
-                btn.textContent = 'Login';
-                btn.onclick = window.handleLogin;
-                toggleText.textContent = "Don't have an account?";
-                toggleBtn.textContent = 'Sign Up';
+                document.getElementById('username-group').classList.add('hidden');
+                document.getElementById('auth-submit-btn').textContent = 'Login';
+                document.getElementById('auth-submit-btn').onclick = window.handleLogin;
             }
         }
+        
+        window.handleLogout = () => { signOut(auth); window.navigateTo('home-view'); }
 
-        // --- UTILITIES ---
-        function updateUI() {
-            // Update Account Page
-            if(currentUser && document.getElementById('account-email')) {
-                document.getElementById('account-email').textContent = currentUser.email || 'Guest';
-                document.getElementById('account-name').textContent = currentUser.displayName || 'Guest User';
-                renderMyContent();
-            }
-        }
-
-        function renderMyContent() {
-            if(!currentUser) return;
-            const myVids = videos.filter(v => v.authorId === currentUser.uid);
-            const myPosts = posts.filter(p => p.authorId === currentUser.uid);
-            
-            const vidList = document.getElementById('my-videos-list');
-            vidList.innerHTML = myVids.map(v => `
-                <div class="flex justify-between items-center bg-gray-700 p-2 rounded mb-2">
-                    <span class="truncate text-white">${escapeHtml(v.title)}</span>
-                    <button onclick="window.deleteItem('videos', '${v.id}')" class="text-gray-400 hover:text-red-500"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
-                </div>
-            `).join('') || '<p class="text-gray-500 text-sm">No videos found.</p>';
-
-            const postList = document.getElementById('my-posts-list');
-            postList.innerHTML = myPosts.map(p => `
-                 <div class="flex justify-between items-center bg-gray-700 p-2 rounded mb-2">
-                    <span class="truncate text-white">${escapeHtml(p.title)}</span>
-                    <button onclick="window.deleteItem('posts', '${p.id}')" class="text-gray-400 hover:text-red-500"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
-                </div>
-            `).join('') || '<p class="text-gray-500 text-sm">No articles found.</p>';
-            lucide.createIcons();
-        }
-
-        window.deleteItem = async (collectionName, id) => {
-            if(confirm("Delete this item permanently?")) {
-                try {
-                    await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', collectionName, id));
-                } catch(err) {
-                    alert("Error deleting: " + err.message);
-                }
-            }
-        }
-
-        function escapeHtml(text) {
-            if (!text) return text;
-            return text
-                .replace(/&/g, "&amp;")
-                .replace(/</g, "&lt;")
-                .replace(/>/g, "&gt;")
-                .replace(/"/g, "&quot;")
-                .replace(/'/g, "&#039;");
-        }
+        function escapeHtml(text) { return text ? text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;") : ''; }
+        function updateUI() { if(currentUser) { document.getElementById('account-name').textContent = currentUser.displayName || 'User'; document.getElementById('account-email').textContent = currentUser.email; } }
 
         lucide.createIcons();
     </script>
@@ -388,97 +440,90 @@
     <!-- Navbar -->
     <nav class="bg-gray-900 border-b border-gray-800 sticky top-0 z-50">
         <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div class="flex items-center justify-between h-16">
+            <div class="flex flex-col md:flex-row items-center justify-between h-auto md:h-16 py-2 md:py-0">
                 <!-- Logo -->
-                <div class="flex items-center cursor-pointer" onclick="window.navigateTo('home-view')">
-                    <div class="bg-red-600 p-2 rounded-lg mr-2">
-                        <i data-lucide="shield-alert" class="h-6 w-6 text-white"></i>
-                    </div>
+                <div class="flex items-center cursor-pointer mb-2 md:mb-0" onclick="window.navigateTo('home-view')">
+                    <div class="bg-red-600 p-2 rounded-lg mr-2"><i data-lucide="shield-alert" class="h-6 w-6 text-white"></i></div>
                     <span class="text-white text-xl font-bold tracking-wider">UT</span>
-                    <span class="text-gray-400 text-xs ml-2 hidden sm:block">UNCENSORED TRUTH</span>
                 </div>
 
-                <!-- Desktop Menu -->
-                <div class="hidden md:flex space-x-4 items-center">
-                    <button onclick="window.navigateTo('home-view')" class="text-gray-300 hover:text-white px-3 py-2 rounded-md text-sm font-medium">Videos</button>
-                    <button onclick="window.navigateTo('blog-view')" class="text-gray-300 hover:text-white px-3 py-2 rounded-md text-sm font-medium">Blog</button>
-                    
-                    <div class="h-6 w-px bg-gray-700 mx-2"></div>
-                    
-                    <!-- Authenticated Menu -->
-                    <div id="nav-user-section" class="flex space-x-2 hidden">
-                        <button onclick="window.navigateTo('upload-view')" class="flex items-center px-3 py-2 rounded-md text-sm font-medium text-red-500 hover:bg-gray-800">
-                            <i data-lucide="upload" class="h-4 w-4 mr-2"></i> Upload
-                        </button>
-                        <button onclick="window.navigateTo('account-view')" class="flex items-center px-3 py-2 rounded-md text-sm font-medium text-gray-300 hover:text-white">
-                            <i data-lucide="user" class="h-4 w-4 mr-2"></i> Account
-                        </button>
-                    </div>
+                <!-- Search Bar -->
+                <div class="relative w-full md:w-1/3 mb-2 md:mb-0">
+                    <input type="text" onkeyup="window.setSearch(this.value)" placeholder="Search videos, tags, blogs..." class="w-full bg-gray-800 border border-gray-700 rounded-full py-2 pl-10 pr-4 text-sm text-white focus:outline-none focus:border-red-600">
+                    <i data-lucide="search" class="absolute left-3 top-2.5 h-4 w-4 text-gray-400"></i>
+                </div>
 
-                    <!-- Guest Menu -->
+                <!-- Menu -->
+                <div class="flex space-x-4 items-center">
+                    <button onclick="window.navigateTo('home-view')" class="text-gray-300 hover:text-white text-sm font-medium">Videos</button>
+                    <button onclick="window.navigateTo('blog-view')" class="text-gray-300 hover:text-white text-sm font-medium">Blog</button>
+                    <div class="h-6 w-px bg-gray-700 mx-2 hidden md:block"></div>
+                    
+                    <div id="nav-user-section" class="flex space-x-2 hidden">
+                        <button onclick="window.navigateTo('upload-view')" class="flex items-center px-3 py-2 rounded-md text-sm font-medium text-red-500 hover:bg-gray-800"><i data-lucide="upload" class="h-4 w-4 mr-2"></i> Upload</button>
+                        <button onclick="window.navigateTo('account-view')" class="flex items-center px-3 py-2 rounded-md text-sm font-medium text-gray-300 hover:text-white"><i data-lucide="user" class="h-4 w-4 mr-2"></i> Account</button>
+                    </div>
                     <div id="nav-auth-section">
-                        <button onclick="window.navigateTo('auth-view')" class="px-4 py-2 rounded-md text-sm font-medium bg-red-600 text-white hover:bg-red-700 transition-colors">
-                            Sign In
-                        </button>
+                        <button onclick="window.navigateTo('auth-view')" class="px-4 py-2 rounded-md text-sm font-medium bg-red-600 text-white hover:bg-red-700">Sign In</button>
                     </div>
                 </div>
             </div>
         </div>
     </nav>
 
-    <!-- Main Content Area -->
+    <!-- Main Content -->
     <main class="flex-grow p-4 sm:p-6 max-w-7xl mx-auto w-full">
         
-        <!-- 1. HOME VIEW (Video Grid) -->
+        <!-- 1. HOME VIEW -->
         <div id="home-view" class="view-section">
-            <div class="flex items-center justify-between mb-8">
-                <h2 class="text-2xl font-bold text-white flex items-center">
-                    <i data-lucide="play" class="h-6 w-6 mr-2 text-red-500"></i> Trending Videos
-                </h2>
+            <div class="flex flex-col sm:flex-row items-center justify-between mb-8 gap-4">
+                <h2 class="text-2xl font-bold text-white flex items-center"><i data-lucide="play" class="h-6 w-6 mr-2 text-red-500"></i> Videos</h2>
+                <select onchange="window.setSort(this.value)" class="bg-gray-800 border border-gray-700 text-white text-sm rounded-lg p-2.5 focus:border-red-500 outline-none">
+                    <option value="latest">Latest</option>
+                    <option value="views">Most Viewed</option>
+                    <option value="likes">Most Liked</option>
+                </select>
             </div>
-            <div id="video-grid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-                <!-- Videos injected here by JS -->
-                <div class="col-span-full text-center py-20">
-                    <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-red-500 mx-auto"></div>
-                </div>
-            </div>
+            <div id="video-grid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6"></div>
         </div>
 
         <!-- 2. BLOG VIEW -->
         <div id="blog-view" class="view-section hidden max-w-4xl mx-auto">
             <div class="flex items-center justify-between mb-8">
-                <h2 class="text-2xl font-bold text-white flex items-center">
-                    <i data-lucide="file-text" class="h-6 w-6 mr-2 text-red-500"></i> Uncensored Blog
-                </h2>
+                <h2 class="text-2xl font-bold text-white flex items-center"><i data-lucide="file-text" class="h-6 w-6 mr-2 text-red-500"></i> Blog</h2>
+                <select onchange="window.setSort(this.value)" class="bg-gray-800 border border-gray-700 text-white text-sm rounded-lg p-2.5 focus:border-red-500 outline-none">
+                    <option value="latest">Latest</option>
+                    <option value="views">Most Viewed</option>
+                    <option value="likes">Most Liked</option>
+                </select>
             </div>
-            <div id="blog-list" class="space-y-6">
-                <!-- Posts injected here -->
-            </div>
+            <div id="blog-list" class="space-y-6"></div>
         </div>
 
         <!-- 3. SINGLE VIDEO VIEW -->
         <div id="video-view" class="view-section hidden">
-            <button onclick="window.navigateTo('home-view')" class="text-gray-400 hover:text-white mb-4 flex items-center">
-                <i data-lucide="arrow-left" class="w-4 h-4 mr-1"></i> Back
-            </button>
+            <button onclick="window.navigateTo('home-view')" class="text-gray-400 hover:text-white mb-4 flex items-center"><i data-lucide="arrow-left" class="w-4 h-4 mr-1"></i> Back</button>
             <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
                 <div class="lg:col-span-2">
-                    <!-- Player -->
-                    <div id="player-container" class="aspect-video bg-black rounded-lg overflow-hidden border border-gray-800 shadow-2xl flex items-center justify-center">
-                        <!-- Iframe injected here -->
-                    </div>
-                    
+                    <div id="player-container" class="aspect-video bg-black rounded-lg overflow-hidden border border-gray-800 shadow-2xl flex items-center justify-center"></div>
                     <h1 id="video-title" class="text-2xl font-bold text-white mt-4"></h1>
-                    <div class="flex items-center mt-2 border-b border-gray-800 pb-4">
-                        <div class="h-10 w-10 rounded-full bg-red-600 flex items-center justify-center text-white font-bold mr-3">
-                            <i data-lucide="user" class="w-5 h-5"></i>
-                        </div>
-                        <div>
+                    
+                    <div class="flex items-center justify-between mt-2 border-b border-gray-800 pb-4">
+                        <div class="flex items-center">
+                            <div class="h-10 w-10 rounded-full bg-red-600 flex items-center justify-center text-white font-bold mr-3"><i data-lucide="user" class="w-5 h-5"></i></div>
                             <p id="video-author" class="text-white font-medium"></p>
                         </div>
+                        <div id="video-actions" class="flex items-center"></div>
                     </div>
-                    <div class="mt-4 bg-gray-900 p-4 rounded-lg">
-                        <p id="video-desc" class="text-gray-300 whitespace-pre-wrap"></p>
+
+                    <div id="video-tags" class="mt-4 flex flex-wrap gap-2"></div>
+                    <div class="mt-4 bg-gray-900 p-4 rounded-lg"><p id="video-desc" class="text-gray-300 whitespace-pre-wrap"></p></div>
+
+                    <!-- Comments -->
+                    <div class="mt-8">
+                        <h3 class="text-lg font-bold text-white mb-4">Comments</h3>
+                        <div id="comment-form-container" class="mb-4"></div>
+                        <div id="comments-list" class="space-y-4"></div>
                     </div>
                 </div>
             </div>
@@ -486,14 +531,18 @@
 
         <!-- 4. SINGLE POST VIEW -->
         <div id="post-view" class="view-section hidden max-w-3xl mx-auto">
-            <button onclick="window.navigateTo('blog-view')" class="text-gray-400 hover:text-white mb-6 flex items-center">
-                <i data-lucide="arrow-left" class="w-4 h-4 mr-1"></i> Back
-            </button>
+            <button onclick="window.navigateTo('blog-view')" class="text-gray-400 hover:text-white mb-6 flex items-center"><i data-lucide="arrow-left" class="w-4 h-4 mr-1"></i> Back</button>
             <article class="bg-gray-900 p-8 rounded-lg border border-gray-800 shadow-xl">
-                <h1 id="post-title" class="text-3xl sm:text-4xl font-bold text-white mb-6 leading-tight"></h1>
-                <div id="post-meta" class="text-sm text-gray-400 mb-8 border-b border-gray-800 pb-6"></div>
-                <div class="prose prose-invert max-w-none">
-                    <p id="post-content" class="text-gray-300 text-lg leading-relaxed whitespace-pre-wrap"></p>
+                <h1 id="post-title" class="text-3xl font-bold text-white mb-4"></h1>
+                <div id="post-meta" class="text-sm text-gray-400 mb-4"></div>
+                <div id="post-actions" class="flex items-center border-b border-gray-800 pb-6 mb-6"></div>
+                <div class="prose prose-invert max-w-none mb-8"><p id="post-content" class="text-gray-300 text-lg leading-relaxed whitespace-pre-wrap"></p></div>
+                
+                <!-- Comments -->
+                <div class="mt-8 border-t border-gray-800 pt-8">
+                    <h3 class="text-lg font-bold text-white mb-4">Comments</h3>
+                    <div id="comment-form-container" class="mb-4"></div>
+                    <div id="comments-list" class="space-y-4"></div>
                 </div>
             </article>
         </div>
@@ -501,35 +550,13 @@
         <!-- 5. UPLOAD VIEW -->
         <div id="upload-view" class="view-section hidden max-w-2xl mx-auto">
             <h2 class="text-3xl font-bold text-white mb-6">Create Content</h2>
-            
-            <!-- Tabs -->
-            <div class="flex space-x-4 mb-6">
-                <button onclick="document.getElementById('form-video').classList.remove('hidden'); document.getElementById('form-post').classList.add('hidden');" class="flex-1 py-3 text-center bg-gray-800 hover:bg-gray-700 rounded-lg text-white border border-gray-700">
-                    Upload Video
-                </button>
-                <button onclick="document.getElementById('form-video').classList.add('hidden'); document.getElementById('form-post').classList.remove('hidden');" class="flex-1 py-3 text-center bg-gray-800 hover:bg-gray-700 rounded-lg text-white border border-gray-700">
-                    Write Article
-                </button>
-            </div>
-
-            <!-- Video Form -->
             <div id="form-video" class="bg-gray-800 p-6 rounded-lg border border-gray-700">
-                <h3 class="text-xl text-white font-bold mb-4">Video Details</h3>
                 <form onsubmit="window.handleUploadVideo(event)" class="space-y-4">
                     <input id="vid-title" type="text" placeholder="Video Title" class="w-full bg-gray-900 border border-gray-600 rounded p-3 text-white focus:outline-none focus:border-red-500">
                     <textarea id="vid-desc" rows="3" placeholder="Description" class="w-full bg-gray-900 border border-gray-600 rounded p-3 text-white focus:outline-none focus:border-red-500"></textarea>
-                    <textarea id="vid-embed" rows="4" placeholder='Paste Embed Code here (e.g., <iframe src="..."></iframe>)' class="w-full bg-gray-900 border border-gray-600 rounded p-3 text-white font-mono text-sm focus:outline-none focus:border-red-500"></textarea>
+                    <textarea id="vid-embed" rows="3" placeholder="Paste YouTube Link or Embed Code" class="w-full bg-gray-900 border border-gray-600 rounded p-3 text-white font-mono text-sm focus:outline-none focus:border-red-500"></textarea>
+                    <input id="vid-tags" type="text" placeholder="Tags (comma separated: e.g. news, truth, politics)" class="w-full bg-gray-900 border border-gray-600 rounded p-3 text-white focus:outline-none focus:border-red-500">
                     <button type="submit" id="vid-submit-btn" class="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-3 rounded transition-colors">Publish Video</button>
-                </form>
-            </div>
-
-            <!-- Post Form -->
-            <div id="form-post" class="bg-gray-800 p-6 rounded-lg border border-gray-700 hidden">
-                <h3 class="text-xl text-white font-bold mb-4">Article Details</h3>
-                <form onsubmit="window.handleUploadPost(event)" class="space-y-4">
-                    <input id="post-form-title" type="text" placeholder="Headline" class="w-full bg-gray-900 border border-gray-600 rounded p-3 text-white focus:outline-none focus:border-blue-500">
-                    <textarea id="post-form-content" rows="10" placeholder="Write your truth..." class="w-full bg-gray-900 border border-gray-600 rounded p-3 text-white focus:outline-none focus:border-blue-500"></textarea>
-                    <button type="submit" id="post-submit-btn" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded transition-colors">Publish Article</button>
                 </form>
             </div>
         </div>
@@ -538,71 +565,27 @@
         <div id="auth-view" class="view-section hidden flex items-center justify-center py-12">
             <div class="bg-gray-800 p-8 rounded-lg border border-gray-700 shadow-2xl w-full max-w-md">
                 <div class="text-center mb-8">
-                    <i data-lucide="shield-alert" class="h-12 w-12 text-red-600 mx-auto mb-4"></i>
                     <h2 id="auth-title" class="text-3xl font-bold text-white">Login</h2>
                 </div>
-                
                 <div id="auth-error" class="hidden bg-red-500/20 text-red-400 p-3 rounded mb-4 text-sm text-center"></div>
-                
                 <form id="auth-form" class="space-y-4">
-                    <div id="username-group" class="hidden">
-                        <label class="block text-sm font-medium text-gray-400 mb-1">Username</label>
-                        <input id="auth-username" type="text" class="w-full bg-gray-900 border border-gray-600 rounded p-3 text-white focus:border-red-500 focus:outline-none">
-                    </div>
-                    <div>
-                        <label class="block text-sm font-medium text-gray-400 mb-1">Email</label>
-                        <input id="auth-email" type="email" class="w-full bg-gray-900 border border-gray-600 rounded p-3 text-white focus:border-red-500 focus:outline-none">
-                    </div>
-                    <div>
-                        <label class="block text-sm font-medium text-gray-400 mb-1">Password</label>
-                        <input id="auth-pass" type="password" class="w-full bg-gray-900 border border-gray-600 rounded p-3 text-white focus:border-red-500 focus:outline-none">
-                    </div>
-                    <button id="auth-submit-btn" onclick="window.handleLogin(event)" class="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-3 rounded transition-colors">Login</button>
+                    <div id="username-group" class="hidden"><label class="text-sm text-gray-400">Username</label><input id="auth-username" type="text" class="w-full bg-gray-900 border border-gray-600 rounded p-3 text-white"></div>
+                    <div><label class="text-sm text-gray-400">Email</label><input id="auth-email" type="email" class="w-full bg-gray-900 border border-gray-600 rounded p-3 text-white"></div>
+                    <div><label class="text-sm text-gray-400">Password</label><input id="auth-pass" type="password" class="w-full bg-gray-900 border border-gray-600 rounded p-3 text-white"></div>
+                    <button id="auth-submit-btn" onclick="window.handleLogin(event)" class="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-3 rounded">Login</button>
                 </form>
-                
-                <div class="mt-6 text-center">
-                    <p class="text-gray-400 text-sm">
-                        <span id="auth-toggle-text">Don't have an account?</span>
-                        <button id="auth-toggle-btn" onclick="window.toggleAuthMode()" class="text-red-500 hover:text-red-400 font-medium ml-1">Sign Up</button>
-                    </p>
-                </div>
+                <div class="mt-6 text-center"><button onclick="window.toggleAuthMode()" class="text-red-500 hover:text-red-400 font-medium">Switch to Sign Up/Login</button></div>
             </div>
         </div>
 
         <!-- 7. ACCOUNT VIEW -->
         <div id="account-view" class="view-section hidden max-w-4xl mx-auto">
              <div class="flex items-center justify-between mb-8 bg-gray-800 p-6 rounded-lg border border-gray-700">
-                <div class="flex items-center">
-                    <div class="h-16 w-16 bg-gray-700 rounded-full flex items-center justify-center">
-                        <i data-lucide="user" class="h-8 w-8 text-gray-400"></i>
-                    </div>
-                    <div class="ml-4">
-                        <h1 id="account-name" class="text-2xl font-bold text-white">User</h1>
-                        <p id="account-email" class="text-gray-400">user@example.com</p>
-                    </div>
-                </div>
-                <button onclick="window.handleLogout()" class="border border-red-600 text-red-500 px-4 py-2 rounded hover:bg-red-600 hover:text-white transition-colors">Sign Out</button>
-            </div>
-
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
-                <div>
-                    <h3 class="text-xl font-bold text-white mb-4 border-b border-gray-800 pb-2">My Videos</h3>
-                    <div id="my-videos-list" class="space-y-2"></div>
-                </div>
-                <div>
-                    <h3 class="text-xl font-bold text-white mb-4 border-b border-gray-800 pb-2">My Articles</h3>
-                    <div id="my-posts-list" class="space-y-2"></div>
-                </div>
+                <div><h1 id="account-name" class="text-2xl font-bold text-white">User</h1><p id="account-email" class="text-gray-400">user@example.com</p></div>
+                <button onclick="window.handleLogout()" class="border border-red-600 text-red-500 px-4 py-2 rounded hover:bg-red-600 hover:text-white">Sign Out</button>
             </div>
         </div>
 
     </main>
-
-    <footer class="bg-gray-900 border-t border-gray-800 py-8 mt-8">
-        <div class="max-w-7xl mx-auto px-4 text-center">
-            <p class="text-gray-500 text-sm">© 2024 UT Platform. Free Speech Forever.</p>
-        </div>
-    </footer>
-
 </body>
 </html>
