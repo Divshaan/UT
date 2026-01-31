@@ -56,58 +56,67 @@
         let currentUser = null;
         let currentUserProfile = null; 
         let allContent = { videos: [], posts: [], community: [] };
-        let currentComments = [];
+        let myFollows = new Set(); // Stores IDs of users I follow
         let searchQuery = "";
         let searchFilter = "all";
         let globalSort = "latest"; 
         let profileSort = "latest"; 
-        
-        // --- AUTH ---
+        let viewedItem = null;
+        let viewedProfileId = null;
+        let currentView = 'home';
+
+        // --- AUTH & INIT ---
         onAuthStateChanged(auth, async (user) => {
             currentUser = user;
             if(user) {
                 const userDoc = await getDoc(doc(db, 'artifacts', appId, 'public', 'data', 'users', user.uid));
                 if(userDoc.exists()) currentUserProfile = userDoc.data();
                 loadNotifications();
+                loadMyFollows(); // Load who I follow
             } else {
                 currentUserProfile = null;
+                myFollows = new Set();
             }
             updateUI();
         });
 
-        // --- DATA LISTENERS ---
+        // --- GLOBAL LISTENERS ---
+        // 1. Content Listeners
         const collections = ['videos', 'posts', 'community'];
         collections.forEach(col => {
-            const q = query(
-                collection(db, 'artifacts', appId, 'public', 'data', col), 
-                orderBy('createdAt', 'desc'), 
-                limit(100)
-            );
-            
+            const q = query(collection(db, 'artifacts', appId, 'public', 'data', col), orderBy('createdAt', 'desc'), limit(100));
             onSnapshot(q, (snap) => {
                 allContent[col] = snap.docs.map(d => ({ id: d.id, type: col, ...d.data() }));
                 refreshCurrentView();
             }, (err) => {
+                // Fallback
                 const fallbackQ = query(collection(db, 'artifacts', appId, 'public', 'data', col), limit(100));
                 onSnapshot(fallbackQ, (snap) => {
-                     allContent[col] = snap.docs.map(d => ({ id: d.id, type: col, ...d.data() }))
-                        .sort((a,b) => (b.createdAt?.seconds||0) - (a.createdAt?.seconds||0));
+                     allContent[col] = snap.docs.map(d => ({ id: d.id, type: col, ...d.data() })).sort((a,b) => (b.createdAt?.seconds||0) - (a.createdAt?.seconds||0));
                      refreshCurrentView();
                 });
             });
         });
 
+        // 2. My Follows Listener
+        function loadMyFollows() {
+            if(!currentUser) return;
+            // Listen to follows collection where I am the follower
+            const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'follows'), where("followerId", "==", currentUser.uid));
+            onSnapshot(q, (snap) => {
+                myFollows = new Set(snap.docs.map(d => d.data().targetId));
+                if(currentView === 'following' || currentView === 'profile') refreshCurrentView();
+            });
+        }
+
         function refreshCurrentView() {
             if(currentView === 'home' || currentView === 'articles' || currentView === 'community') refreshFeed();
+            else if (currentView === 'following') renderFollowingFeed();
             else if (currentView === 'search') renderSearchResults();
             else if (currentView === 'profile' && viewedProfileId) renderProfile(viewedProfileId);
         }
 
         // --- NAVIGATION ---
-        let currentView = 'home';
-        let viewedItem = null;
-        let viewedProfileId = null;
-
         window.navigateTo = async (view, param = null) => {
             currentView = view;
             
@@ -125,6 +134,11 @@
                 document.getElementById('view-feed').classList.remove('hidden');
                 refreshFeed();
             } 
+            else if (view === 'following') {
+                if(!currentUser) return window.navigateTo('auth');
+                document.getElementById('view-following').classList.remove('hidden');
+                renderFollowingFeed();
+            }
             else if (view === 'search') {
                 document.getElementById('view-search').classList.remove('hidden');
                 if(param) {
@@ -167,31 +181,22 @@
             if(window.innerWidth < 768) toggleSidebar(false);
         };
 
-        // --- SORTING ---
-        window.setGlobalSort = (val) => {
-            globalSort = val;
-            refreshFeed();
-        }
-
+        // --- FEED LOGIC ---
         function applySort(list) {
             let sorted = [...list];
-            if (globalSort === 'latest') {
-                sorted.sort((a,b) => (b.createdAt?.seconds||0) - (a.createdAt?.seconds||0));
-            } else if (globalSort === 'oldest') {
-                sorted.sort((a,b) => (a.createdAt?.seconds||0) - (b.createdAt?.seconds||0));
-            } else if (globalSort === 'popular') {
-                sorted.sort((a,b) => (b.views||0) - (a.views||0));
-            } else if (globalSort === 'trending') {
-                sorted.sort((a,b) => (b.likes||0) - (a.likes||0));
-            }
+            if (globalSort === 'latest') sorted.sort((a,b) => (b.createdAt?.seconds||0) - (a.createdAt?.seconds||0));
+            else if (globalSort === 'oldest') sorted.sort((a,b) => (a.createdAt?.seconds||0) - (b.createdAt?.seconds||0));
+            else if (globalSort === 'popular') sorted.sort((a,b) => (b.views||0) - (a.views||0));
+            else if (globalSort === 'trending') sorted.sort((a,b) => (b.likes||0) - (a.likes||0));
             return sorted;
         }
+
+        window.setGlobalSort = (val) => { globalSort = val; refreshFeed(); }
 
         function refreshFeed() {
             const grid = document.getElementById('feed-grid');
             const title = document.getElementById('feed-title');
-            const sortContainer = document.getElementById('feed-sort-container');
-            sortContainer.classList.remove('hidden'); 
+            document.getElementById('feed-sort-container').classList.remove('hidden');
             
             if(currentView === 'home') {
                 title.innerHTML = '<i data-lucide="play-circle" class="inline mr-2 text-red-600"></i>Videos';
@@ -205,29 +210,45 @@
             }
         }
 
-        // --- SEARCH ---
+        // --- FOLLOWING FEED ---
+        function renderFollowingFeed() {
+            const container = document.getElementById('following-feed');
+            
+            // Combine all content types and filter by authorId
+            let myFeed = [
+                ...allContent.videos, 
+                ...allContent.posts, 
+                ...allContent.community
+            ].filter(item => myFollows.has(item.authorId));
+
+            myFeed.sort((a,b) => (b.createdAt?.seconds||0) - (a.createdAt?.seconds||0));
+
+            if(myFeed.length === 0) {
+                container.innerHTML = `<div class="text-center py-20 text-gray-500">
+                    <i data-lucide="user-x" class="w-12 h-12 mx-auto mb-4 opacity-50"></i>
+                    You aren't following anyone yet, or they haven't posted.<br>Explore content to find creators!
+                </div>`;
+            } else {
+                container.innerHTML = myFeed.map(item => renderSearchCard(item)).join(''); // Reuse the search card layout for following feed
+            }
+            lucide.createIcons();
+        }
+
+        // --- SEARCH LOGIC ---
         window.handleSearchKey = (e, val) => { if(e.key === 'Enter') window.triggerSearch(val); }
         window.triggerSearch = (val) => { if(val && val.trim()) window.navigateTo('search', val); }
         window.setSearchFilter = (filter) => {
             searchFilter = filter;
-            document.querySelectorAll('.filter-btn').forEach(b => {
-                b.classList.remove('bg-gray-100', 'text-black');
-                b.classList.add('bg-gray-800', 'text-gray-300');
-            });
-            const activeBtn = document.getElementById(`filter-btn-${filter}`);
-            if(activeBtn) {
-                activeBtn.classList.remove('bg-gray-800', 'text-gray-300');
-                activeBtn.classList.add('bg-gray-100', 'text-black');
-            }
+            document.querySelectorAll('.filter-btn').forEach(b => { b.classList.remove('bg-gray-100', 'text-black'); b.classList.add('bg-gray-800', 'text-gray-300'); });
+            document.getElementById(`filter-btn-${filter}`)?.classList.replace('bg-gray-800', 'bg-gray-100');
+            document.getElementById(`filter-btn-${filter}`)?.classList.replace('text-gray-300', 'text-black');
             renderSearchResults();
         }
 
         function renderSearchResults() {
-            document.getElementById('feed-sort-container').classList.add('hidden');
             const container = document.getElementById('search-results');
             const q = searchQuery.toLowerCase();
             let results = [];
-            
             if(searchFilter === 'all') results = [...allContent.videos, ...allContent.posts, ...allContent.community];
             else if (searchFilter === 'videos') results = [...allContent.videos];
             else if (searchFilter === 'posts') results = [...allContent.posts];
@@ -240,235 +261,12 @@
                 (i.authorName && i.authorName.toLowerCase().includes(q))
             ).sort((a,b) => (b.createdAt?.seconds||0) - (a.createdAt?.seconds||0));
 
-            if(results.length === 0) container.innerHTML = `<div class="text-center py-20 text-gray-500">No results found for "${escapeHtml(searchQuery)}"</div>`;
+            if(results.length === 0) container.innerHTML = `<div class="text-center py-20 text-gray-500">No results found.</div>`;
             else container.innerHTML = results.map(item => renderSearchCard(item)).join('');
             lucide.createIcons();
         }
 
-        function renderSearchCard(item) {
-            let thumb = '', meta = '', action = '', type = '';
-            if (item.type === 'videos') {
-                const url = item.customThumb || getThumbnail(item.originalLink||'');
-                thumb = url ? 
-                    `<img src="${url}" class="w-full h-full object-cover">` : 
-                    `<div class="w-full h-full flex items-center justify-center bg-gradient-to-br from-gray-800 to-gray-900 border-r border-gray-700"><i data-lucide="play" class="w-8 h-8 text-gray-500"></i></div>`;
-                meta = `${item.views||0} views • ${timeAgo(item.createdAt)}`;
-                action = `window.navigateTo('watch', '${item.id}')`;
-                type = 'Video';
-            } else if (item.type === 'posts') {
-                thumb = `<div class="w-full h-full flex items-center justify-center bg-gradient-to-br from-blue-900/20 to-gray-900 border-r border-gray-700"><i data-lucide="file-text" class="w-8 h-8 text-blue-500"></i></div>`;
-                meta = `Read • ${timeAgo(item.createdAt)}`;
-                action = `window.navigateTo('read', '${item.id}')`;
-                type = 'Article';
-            } else {
-                thumb = item.imageUrl ? `<img src="${item.imageUrl}" class="w-full h-full object-cover">` : `<div class="w-full h-full flex items-center justify-center bg-gradient-to-br from-green-900/20 to-gray-900 border-r border-gray-700"><i data-lucide="users" class="w-8 h-8 text-green-500"></i></div>`;
-                meta = `Buzz • ${timeAgo(item.createdAt)}`;
-                action = `window.navigateTo('community')`;
-                type = 'Buzz';
-            }
-
-            return `
-                <div onclick="${action}" class="flex flex-col sm:flex-row gap-4 cursor-pointer hover:bg-gray-900/50 p-2 rounded-lg transition-colors">
-                    <div class="w-full sm:w-64 aspect-video flex-shrink-0 rounded-lg overflow-hidden relative bg-black border border-gray-800">${thumb} <span class="absolute bottom-1 right-1 bg-black/80 text-white text-[10px] px-1 rounded">${type}</span></div>
-                    <div class="flex-1">
-                        <h3 class="text-white font-medium text-lg mb-1 line-clamp-2">${escapeHtml(item.title || item.content)}</h3>
-                        <div class="text-xs text-gray-400 mb-2">${meta}</div>
-                        <div class="flex items-center gap-2 mb-2">
-                             <div class="w-6 h-6 rounded-full bg-gray-700 flex items-center justify-center text-[10px] text-white overflow-hidden">
-                                ${item.authorPic ? `<img src="${item.authorPic}" class="w-full h-full object-cover">` : (item.authorName||'U')[0].toUpperCase()}
-                            </div>
-                            <span class="text-xs text-gray-400">${escapeHtml(item.authorName)}</span>
-                        </div>
-                        <p class="text-sm text-gray-500 line-clamp-2">${escapeHtml(item.description || item.content)}</p>
-                    </div>
-                </div>
-            `;
-        }
-
-        // --- PROFILE SYSTEM ---
-        window.setProfileSort = (val) => { profileSort = val; renderProfile(viewedProfileId); }
-
-        async function renderProfile(uid) {
-            const container = document.getElementById('profile-content');
-            container.innerHTML = '<div class="text-center py-10"><i data-lucide="loader-2" class="animate-spin w-8 h-8 text-red-600 mx-auto"></i></div>';
-            lucide.createIcons();
-
-            let user = null;
-            if(currentUser && currentUser.uid === uid && currentUserProfile) {
-                user = currentUserProfile; 
-            } else {
-                try {
-                    const docSnap = await getDoc(doc(db, 'artifacts', appId, 'public', 'data', 'users', uid));
-                    if(docSnap.exists()) user = docSnap.data();
-                } catch(e) {}
-            }
-
-            if(!user) {
-                const anyContent = [...allContent.videos, ...allContent.posts].find(c => c.authorId === uid);
-                user = {
-                    displayName: anyContent ? anyContent.authorName : "User",
-                    username: "user",
-                    bio: "Welcome to my channel.",
-                    photoBase64: null,
-                    createdAt: anyContent ? anyContent.createdAt : null
-                };
-            }
-
-            let followers = 0;
-            let isFollowing = false;
-            const fQ = query(collection(db, 'artifacts', appId, 'public', 'data', 'follows'), where("targetId", "==", uid));
-            const fSnap = await getDocs(fQ);
-            followers = fSnap.size;
-            if(currentUser && fSnap.docs.find(d => d.data().followerId === currentUser.uid)) isFollowing = true;
-
-            const isMe = currentUser && currentUser.uid === uid;
-            const isVerified = followers > 10; 
-
-            document.getElementById('profile-header').innerHTML = `
-                <div class="flex flex-col md:flex-row items-center md:items-start gap-6 mb-8 p-6 bg-gray-900/50 rounded-xl border border-gray-800">
-                    <div class="w-32 h-32 rounded-full bg-gray-800 flex items-center justify-center text-5xl font-bold text-white border-4 border-gray-950 shadow-xl overflow-hidden shrink-0">
-                        ${user.photoBase64 ? `<img src="${user.photoBase64}" class="w-full h-full object-cover">` : user.displayName[0].toUpperCase()}
-                    </div>
-                    <div class="text-center md:text-left flex-1 min-w-0">
-                        <h1 class="text-3xl font-bold text-white flex items-center justify-center md:justify-start gap-2">
-                            ${escapeHtml(user.displayName)} 
-                            ${isVerified ? '<i data-lucide="badge-check" class="w-6 h-6 text-blue-500 fill-current"></i>' : ''}
-                        </h1>
-                        <p class="text-gray-400 mt-1">@${escapeHtml(user.username)} • ${followers} subscribers</p>
-                        <p class="text-gray-300 mt-3 max-w-lg text-sm whitespace-pre-wrap">${escapeHtml(user.bio || "No bio yet.")}</p>
-                        <p class="text-xs text-gray-600 mt-2">Joined ${user.createdAt ? new Date(user.createdAt.seconds*1000).toLocaleDateString() : 'Recently'}</p>
-                    </div>
-                    <div class="flex gap-3 mt-4 md:mt-0">
-                        ${isMe ? 
-                            `<button onclick="window.openEditProfile('${escapeHtml(user.displayName)}', '${escapeHtml(user.username)}', '${escapeHtml(user.bio||'')}')" class="px-4 py-2 bg-gray-800 border border-gray-700 rounded-full text-sm hover:bg-gray-700 font-medium">Customize Channel</button>` :
-                            `<button onclick="window.toggleFollow('${uid}')" class="px-6 py-2 ${isFollowing ? 'bg-gray-800 text-white' : 'bg-white text-black'} font-bold rounded-full text-sm hover:opacity-90 transition-colors">
-                                ${isFollowing ? 'Subscribed' : 'Subscribe'}
-                            </button>`
-                        }
-                    </div>
-                </div>
-                
-                <div class="flex items-center justify-between border-b border-gray-800 mb-6">
-                    <div class="flex overflow-x-auto">
-                        <button class="px-4 py-3 border-b-2 border-white text-white font-medium text-sm">Videos</button>
-                    </div>
-                    <select onchange="window.setProfileSort(this.value)" class="bg-gray-900 text-sm text-gray-400 border-none outline-none focus:ring-0 cursor-pointer">
-                        <option value="latest" ${profileSort==='latest'?'selected':''}>Latest</option>
-                        <option value="popular" ${profileSort==='popular'?'selected':''}>Most Viewed</option>
-                        <option value="oldest" ${profileSort==='oldest'?'selected':''}>Oldest</option>
-                    </select>
-                </div>
-            `;
-
-            let myVideos = allContent.videos.filter(x => x.authorId === uid);
-            
-            if (profileSort === 'latest') myVideos.sort((a,b) => (b.createdAt?.seconds||0) - (a.createdAt?.seconds||0));
-            else if (profileSort === 'oldest') myVideos.sort((a,b) => (a.createdAt?.seconds||0) - (b.createdAt?.seconds||0));
-            else if (profileSort === 'popular') myVideos.sort((a,b) => (b.views||0) - (a.views||0));
-
-            container.innerHTML = '';
-            renderVideos(myVideos, container, isMe); 
-            lucide.createIcons();
-        }
-
-        // --- EDIT PROFILE LOGIC ---
-        window.openEditProfile = (name, username, bio) => {
-            document.getElementById('edit-modal').classList.remove('hidden');
-            document.getElementById('edit-name').value = name;
-            document.getElementById('edit-username').value = username;
-            document.getElementById('edit-bio').value = bio;
-            document.getElementById('edit-preview').src = ""; 
-            document.getElementById('edit-preview-container').classList.add('hidden');
-        };
-
-        window.closeEditModal = () => document.getElementById('edit-modal').classList.add('hidden');
-
-        window.previewImage = async (input) => {
-            if (input.files && input.files[0]) {
-                const base64 = await compressImage(input.files[0]);
-                document.getElementById('edit-preview').src = base64;
-                document.getElementById('edit-preview-container').classList.remove('hidden');
-                input.dataset.base64 = base64; 
-            }
-        };
-
-        function compressImage(file) {
-            return new Promise((resolve, reject) => {
-                const reader = new FileReader();
-                reader.readAsDataURL(file);
-                reader.onload = (event) => {
-                    const img = new Image();
-                    img.src = event.target.result;
-                    img.onload = () => {
-                        const canvas = document.createElement('canvas');
-                        const MAX_WIDTH = 300;
-                        const scaleSize = MAX_WIDTH / img.width;
-                        canvas.width = MAX_WIDTH;
-                        canvas.height = img.height * scaleSize;
-                        const ctx = canvas.getContext('2d');
-                        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-                        resolve(canvas.toDataURL('image/jpeg', 0.7)); 
-                    };
-                };
-                reader.onerror = (error) => reject(error);
-            });
-        }
-
-        window.saveProfileChanges = async (e) => {
-            e.preventDefault();
-            const btn = document.getElementById('save-profile-btn');
-            btn.disabled = true; btn.innerText = "Saving...";
-
-            const name = document.getElementById('edit-name').value.trim();
-            const username = document.getElementById('edit-username').value.trim().toLowerCase();
-            const bio = document.getElementById('edit-bio').value.trim();
-            const imgInput = document.getElementById('edit-img-input');
-            const newPic = imgInput.dataset.base64 || null;
-
-            if(!username.match(/^[a-z0-9_]{3,15}$/)) {
-                btn.disabled = false; btn.innerText = "Save";
-                return alert("Username must be 3-15 chars, lowercase letters/numbers only.");
-            }
-
-            try {
-                if(username !== currentUserProfile?.username) {
-                    const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'users'), where("username", "==", username));
-                    const snap = await getDocs(q);
-                    if(!snap.empty && snap.docs[0].id !== currentUser.uid) throw new Error("Username already taken.");
-                }
-
-                const userData = {
-                    displayName: name,
-                    username: username,
-                    bio: bio,
-                    updatedAt: serverTimestamp()
-                };
-                if(newPic) userData.photoBase64 = newPic;
-                
-                await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'users', currentUser.uid), userData, { merge: true });
-                await updateProfile(currentUser, { displayName: name });
-                currentUserProfile = { ...currentUserProfile, ...userData };
-                
-                closeEditModal();
-                renderProfile(currentUser.uid);
-            } catch(err) {
-                alert(err.message);
-            } finally {
-                btn.disabled = false; btn.innerText = "Save";
-            }
-        };
-
-        window.deleteContent = async (collectionName, id) => {
-            if(!confirm("Delete this content?")) return;
-            try {
-                await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', collectionName, id));
-                if(currentView === 'watch' && viewedItem?.id === id) window.navigateTo('home');
-                else if (currentView === 'read' && viewedItem?.id === id) window.navigateTo('articles');
-                else if (currentView === 'profile') renderProfile(currentUser.uid);
-            } catch(e) { alert("Error deleting: " + e.message); }
-        };
-
-        // --- RENDERERS ---
+        // --- SHARED RENDERERS ---
         function getThumbnail(url) {
             const ytMatch = url.match(/(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/);
             if(ytMatch) return `https://img.youtube.com/vi/${ytMatch[1]}/mqdefault.jpg`;
@@ -483,10 +281,7 @@
                 const thumbUrl = v.customThumb || getThumbnail(v.originalLink || '') || '';
                 const thumbnail = thumbUrl ? 
                     `<img src="${thumbUrl}" class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300">` : 
-                    `<div class="w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-gray-800 to-gray-900 group-hover:from-gray-700 group-hover:to-gray-800 transition-colors">
-                        <i data-lucide="play" class="w-10 h-10 text-gray-600 mb-2"></i>
-                        <span class="text-[10px] text-gray-500 uppercase tracking-widest font-bold">Preview</span>
-                     </div>`;
+                    `<div class="w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-gray-800 to-gray-900"><i data-lucide="play" class="w-10 h-10 text-gray-600 mb-2"></i></div>`;
 
                 return `
                 <div class="group cursor-pointer relative">
@@ -510,11 +305,7 @@
                             </div>
                         </div>
                     </div>
-                    ${isOwner ? `
-                        <button onclick="window.deleteContent('videos', '${v.id}')" class="absolute top-2 right-2 bg-black/60 p-1.5 rounded text-white hover:bg-red-600 transition-colors z-20">
-                            <i data-lucide="trash-2" class="w-4 h-4"></i>
-                        </button>
-                    ` : ''}
+                    ${isOwner ? `<button onclick="window.deleteContent('videos', '${v.id}')" class="absolute top-2 right-2 bg-black/60 p-1.5 rounded text-white hover:bg-red-600 z-20"><i data-lucide="trash-2" class="w-4 h-4"></i></button>` : ''}
                 </div>
             `}).join('') : '<div class="col-span-full text-center text-gray-500 py-10">No videos found.</div>';
             lucide.createIcons();
@@ -524,17 +315,12 @@
             container.className = "grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6";
             container.innerHTML = list.length ? list.map(a => `
                 <div onclick="window.navigateTo('read', '${a.id}')" class="bg-gray-900 border border-gray-800 rounded-xl p-6 cursor-pointer hover:border-blue-900/50 hover:bg-gray-800 transition-all flex flex-col h-full group">
-                    <div class="flex items-center gap-2 mb-3 text-xs text-gray-400">
-                        <span class="bg-blue-900/20 text-blue-400 px-2 py-0.5 rounded">Blog</span>
-                        <span>• ${timeAgo(a.createdAt)}</span>
-                    </div>
+                    <div class="flex items-center gap-2 mb-3 text-xs text-gray-400"><span class="bg-blue-900/20 text-blue-400 px-2 py-0.5 rounded">Blog</span><span>• ${timeAgo(a.createdAt)}</span></div>
                     <h3 class="text-lg font-bold text-white mb-2 line-clamp-2 group-hover:text-blue-400 transition-colors">${escapeHtml(a.title)}</h3>
                     <p class="text-gray-400 text-sm line-clamp-3 mb-4 flex-grow">${escapeHtml(a.content)}</p>
                     <div class="flex items-center justify-between pt-4 border-t border-gray-800 mt-auto">
                         <div class="flex items-center gap-2" onclick="event.stopPropagation(); window.navigateTo('profile', '${a.authorId}')">
-                            <div class="w-6 h-6 rounded-full bg-gray-700 flex items-center justify-center text-[10px] text-white">
-                                ${(a.authorName||'U')[0].toUpperCase()}
-                            </div>
+                            <div class="w-6 h-6 rounded-full bg-gray-700 flex items-center justify-center text-[10px] text-white">${(a.authorName||'U')[0].toUpperCase()}</div>
                             <span class="text-xs text-gray-300 hover:text-white">${escapeHtml(a.authorName)}</span>
                         </div>
                     </div>
@@ -548,39 +334,236 @@
             container.innerHTML = list.length ? list.map(p => `
                 <div class="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
                     <div class="p-4 flex items-center gap-3">
-                        <div onclick="window.navigateTo('profile', '${p.authorId}')" class="w-10 h-10 rounded-full bg-green-900/30 border border-green-900 flex items-center justify-center font-bold text-green-100 cursor-pointer">
-                            ${(p.authorName||'U')[0].toUpperCase()}
-                        </div>
-                        <div>
-                            <h4 onclick="window.navigateTo('profile', '${p.authorId}')" class="text-white font-medium text-sm cursor-pointer hover:underline">${escapeHtml(p.authorName)}</h4>
-                            <p class="text-gray-500 text-xs">${timeAgo(p.createdAt)}</p>
-                        </div>
+                        <div onclick="window.navigateTo('profile', '${p.authorId}')" class="w-10 h-10 rounded-full bg-green-900/30 border border-green-900 flex items-center justify-center font-bold text-green-100 cursor-pointer">${(p.authorName||'U')[0].toUpperCase()}</div>
+                        <div><h4 onclick="window.navigateTo('profile', '${p.authorId}')" class="text-white font-medium text-sm cursor-pointer hover:underline">${escapeHtml(p.authorName)}</h4><p class="text-gray-500 text-xs">${timeAgo(p.createdAt)}</p></div>
                     </div>
-                    <div class="px-4 pb-2">
-                        <p class="text-white text-base whitespace-pre-wrap">${escapeHtml(p.content)}</p>
-                    </div>
+                    <div class="px-4 pb-2"><p class="text-white text-base whitespace-pre-wrap">${escapeHtml(p.content)}</p></div>
                     ${p.imageUrl ? `<div class="mt-2 w-full bg-black flex justify-center"><img src="${escapeHtml(p.imageUrl)}" class="max-h-[500px] w-auto object-contain"></div>` : ''}
                     <div class="p-3 px-4 flex items-center gap-6 border-t border-gray-800 mt-2 bg-gray-900/50">
-                        <button onclick="window.toggleLike('community', '${p.id}')" class="flex items-center gap-2 text-gray-400 hover:text-red-500 transition-colors text-sm">
-                            <i data-lucide="heart" class="w-4 h-4"></i> ${p.likes || 0}
-                        </button>
-                        <button onclick="window.toggleComments('comm-${p.id}')" class="flex items-center gap-2 text-gray-400 hover:text-white transition-colors text-sm">
-                            <i data-lucide="message-circle" class="w-4 h-4"></i> Comment
-                        </button>
+                        <button onclick="window.toggleLike('community', '${p.id}')" class="flex items-center gap-2 text-gray-400 hover:text-red-500 transition-colors text-sm"><i data-lucide="heart" class="w-4 h-4"></i> ${p.likes || 0}</button>
+                        <button onclick="window.toggleComments('comm-${p.id}')" class="flex items-center gap-2 text-gray-400 hover:text-white transition-colors text-sm"><i data-lucide="message-circle" class="w-4 h-4"></i> Comment</button>
                     </div>
                     <div id="comm-${p.id}" class="hidden p-4 border-t border-gray-800 bg-black/20">
                          <div id="comm-list-${p.id}" class="space-y-3 mb-3"></div>
-                         <form onsubmit="window.postInlineComment(event, '${p.id}', 'community')" class="flex gap-2">
-                            <input type="text" placeholder="Reply..." class="flex-1 bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-white" autocomplete="off">
-                            <button type="submit" class="text-green-500 text-sm font-medium hover:text-green-400">Post</button>
-                         </form>
+                         <form onsubmit="window.postInlineComment(event, '${p.id}', 'community')" class="flex gap-2"><input type="text" placeholder="Reply..." class="flex-1 bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-white" autocomplete="off"><button type="submit" class="text-green-500 text-sm font-medium hover:text-green-400">Post</button></form>
                     </div>
                 </div>
             `).join('') : '<div class="text-center text-gray-500 py-10">No posts yet.</div>';
             lucide.createIcons();
         }
 
-        // --- WATCH / READ LOGIC ---
+        function renderSearchCard(item) {
+            let thumb = '', meta = '', action = '', type = '';
+            if (item.type === 'videos') {
+                const url = item.customThumb || getThumbnail(item.originalLink||'');
+                thumb = url ? `<img src="${url}" class="w-full h-full object-cover">` : `<div class="w-full h-full flex items-center justify-center bg-gray-800"><i data-lucide="play" class="w-8 h-8 text-gray-500"></i></div>`;
+                meta = `${item.views||0} views • ${timeAgo(item.createdAt)}`;
+                action = `window.navigateTo('watch', '${item.id}')`;
+                type = 'Video';
+            } else if (item.type === 'posts') {
+                thumb = `<div class="w-full h-full flex items-center justify-center bg-gray-800"><i data-lucide="file-text" class="w-8 h-8 text-blue-500"></i></div>`;
+                meta = `Read • ${timeAgo(item.createdAt)}`;
+                action = `window.navigateTo('read', '${item.id}')`;
+                type = 'Article';
+            } else {
+                thumb = item.imageUrl ? `<img src="${item.imageUrl}" class="w-full h-full object-cover">` : `<div class="w-full h-full flex items-center justify-center bg-gray-800"><i data-lucide="users" class="w-8 h-8 text-green-500"></i></div>`;
+                meta = `Buzz • ${timeAgo(item.createdAt)}`;
+                action = `window.navigateTo('community')`;
+                type = 'Buzz';
+            }
+            return `
+                <div onclick="${action}" class="flex flex-col sm:flex-row gap-4 cursor-pointer hover:bg-gray-900/50 p-2 rounded-lg transition-colors">
+                    <div class="w-full sm:w-64 aspect-video flex-shrink-0 rounded-lg overflow-hidden relative bg-black border border-gray-800">${thumb} <span class="absolute bottom-1 right-1 bg-black/80 text-white text-[10px] px-1 rounded">${type}</span></div>
+                    <div class="flex-1">
+                        <h3 class="text-white font-medium text-lg mb-1 line-clamp-2">${escapeHtml(item.title || item.content)}</h3>
+                        <div class="text-xs text-gray-400 mb-2">${meta}</div>
+                        <div class="flex items-center gap-2 mb-2"><div class="w-6 h-6 rounded-full bg-gray-700 flex items-center justify-center text-[10px] text-white overflow-hidden">${item.authorPic ? `<img src="${item.authorPic}" class="w-full h-full object-cover">` : (item.authorName||'U')[0].toUpperCase()}</div><span class="text-xs text-gray-400">${escapeHtml(item.authorName)}</span></div>
+                        <p class="text-sm text-gray-500 line-clamp-2">${escapeHtml(item.description || item.content)}</p>
+                    </div>
+                </div>
+            `;
+        }
+
+        // --- PROFILE SYSTEM ---
+        window.setProfileSort = (val) => { profileSort = val; renderProfile(viewedProfileId); }
+
+        async function renderProfile(uid) {
+            const container = document.getElementById('profile-content');
+            container.innerHTML = '<div class="text-center py-10"><i data-lucide="loader-2" class="animate-spin w-8 h-8 text-red-600 mx-auto"></i></div>';
+            lucide.createIcons();
+
+            let user = null;
+            if(currentUser && currentUser.uid === uid && currentUserProfile) user = currentUserProfile; 
+            else {
+                try {
+                    const docSnap = await getDoc(doc(db, 'artifacts', appId, 'public', 'data', 'users', uid));
+                    if(docSnap.exists()) user = docSnap.data();
+                } catch(e) {}
+            }
+
+            if(!user) {
+                const anyContent = [...allContent.videos, ...allContent.posts].find(c => c.authorId === uid);
+                user = { displayName: anyContent ? anyContent.authorName : "User", username: "user", bio: "Welcome to my channel.", photoBase64: null, createdAt: anyContent ? anyContent.createdAt : null };
+            }
+
+            let followers = 0;
+            const fQ = query(collection(db, 'artifacts', appId, 'public', 'data', 'follows'), where("targetId", "==", uid));
+            const fSnap = await getDocs(fQ);
+            followers = fSnap.size;
+            
+            // Check following status using global set
+            const isFollowing = currentUser && myFollows.has(uid);
+            const isMe = currentUser && currentUser.uid === uid;
+            const isVerified = followers > 10; 
+
+            document.getElementById('profile-header').innerHTML = `
+                <div class="flex flex-col md:flex-row items-center md:items-start gap-6 mb-8 p-6 bg-gray-900/50 rounded-xl border border-gray-800">
+                    <div class="w-32 h-32 rounded-full bg-gray-800 flex items-center justify-center text-5xl font-bold text-white border-4 border-gray-950 shadow-xl overflow-hidden shrink-0">
+                        ${user.photoBase64 ? `<img src="${user.photoBase64}" class="w-full h-full object-cover">` : user.displayName[0].toUpperCase()}
+                    </div>
+                    <div class="text-center md:text-left flex-1 min-w-0">
+                        <h1 class="text-3xl font-bold text-white flex items-center justify-center md:justify-start gap-2">
+                            ${escapeHtml(user.displayName)} 
+                            ${isVerified ? '<i data-lucide="badge-check" class="w-6 h-6 text-blue-500 fill-current"></i>' : ''}
+                        </h1>
+                        <p class="text-gray-400 mt-1">@${escapeHtml(user.username)} • ${followers} followers</p>
+                        <p class="text-gray-300 mt-3 max-w-lg text-sm whitespace-pre-wrap">${escapeHtml(user.bio || "No bio yet.")}</p>
+                        <p class="text-xs text-gray-600 mt-2">Joined ${user.createdAt ? new Date(user.createdAt.seconds*1000).toLocaleDateString() : 'Recently'}</p>
+                    </div>
+                    <div class="flex gap-3 mt-4 md:mt-0">
+                        ${isMe ? 
+                            `<button onclick="window.openEditProfile('${escapeHtml(user.displayName)}', '${escapeHtml(user.username)}', '${escapeHtml(user.bio||'')}')" class="px-4 py-2 bg-gray-800 border border-gray-700 rounded-full text-sm hover:bg-gray-700 font-medium">Customize Channel</button>` :
+                            `<button onclick="window.toggleFollow('${uid}')" class="px-6 py-2 ${isFollowing ? 'bg-gray-800 text-white' : 'bg-white text-black'} font-bold rounded-full text-sm hover:opacity-90 transition-colors">
+                                ${isFollowing ? 'Following' : 'Follow'}
+                            </button>`
+                        }
+                    </div>
+                </div>
+                <div class="flex items-center justify-between border-b border-gray-800 mb-6">
+                    <div class="flex overflow-x-auto"><button class="px-4 py-3 border-b-2 border-white text-white font-medium text-sm">Videos</button></div>
+                    <select onchange="window.setProfileSort(this.value)" class="bg-gray-900 text-sm text-gray-400 border-none outline-none focus:ring-0 cursor-pointer">
+                        <option value="latest" ${profileSort==='latest'?'selected':''}>Latest</option>
+                        <option value="popular" ${profileSort==='popular'?'selected':''}>Most Viewed</option>
+                        <option value="oldest" ${profileSort==='oldest'?'selected':''}>Oldest</option>
+                    </select>
+                </div>
+            `;
+
+            let myVideos = allContent.videos.filter(x => x.authorId === uid);
+            if (profileSort === 'latest') myVideos.sort((a,b) => (b.createdAt?.seconds||0) - (a.createdAt?.seconds||0));
+            else if (profileSort === 'oldest') myVideos.sort((a,b) => (a.createdAt?.seconds||0) - (b.createdAt?.seconds||0));
+            else if (profileSort === 'popular') myVideos.sort((a,b) => (b.views||0) - (a.views||0));
+
+            container.innerHTML = '';
+            renderVideos(myVideos, container, isMe); 
+            lucide.createIcons();
+        }
+
+        window.toggleFollow = async (targetId) => {
+            if(!currentUser) return alert("Please login.");
+            if(targetId === currentUser.uid) return alert("Can't follow yourself.");
+            
+            try {
+                // Check if already following based on local state for speed
+                const isFollowing = myFollows.has(targetId);
+                
+                // Optimistic UI update (optional but good for UX)
+                // We let the listener handle the actual UI refresh to be safe
+                
+                if (isFollowing) {
+                    // We need the doc ID to delete. Query it.
+                    const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'follows'), 
+                                    where("followerId", "==", currentUser.uid), where("targetId", "==", targetId));
+                    const snap = await getDocs(q);
+                    if (!snap.empty) {
+                        await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'follows', snap.docs[0].id));
+                    }
+                } else {
+                    await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'follows'), {
+                        followerId: currentUser.uid, targetId: targetId, createdAt: serverTimestamp()
+                    });
+                    // addNotification(targetId, 'follow'); // Optional
+                }
+            } catch (error) {
+                console.error("Follow Error:", error);
+                if (error.code === 'failed-precondition') {
+                    alert("System Update: Please check the browser console to create the required database index for Following.");
+                }
+            }
+        };
+
+        // --- EDIT PROFILE & IMAGE LOGIC ---
+        window.openEditProfile = (name, username, bio) => {
+            document.getElementById('edit-modal').classList.remove('hidden');
+            document.getElementById('edit-name').value = name;
+            document.getElementById('edit-username').value = username;
+            document.getElementById('edit-bio').value = bio;
+            document.getElementById('edit-preview').src = ""; 
+            document.getElementById('edit-preview-container').classList.add('hidden');
+        };
+        window.closeEditModal = () => document.getElementById('edit-modal').classList.add('hidden');
+        window.previewImage = async (input) => {
+            if (input.files && input.files[0]) {
+                const base64 = await compressImage(input.files[0]);
+                document.getElementById('edit-preview').src = base64;
+                document.getElementById('edit-preview-container').classList.remove('hidden');
+                input.dataset.base64 = base64; 
+            }
+        };
+        function compressImage(file) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.readAsDataURL(file);
+                reader.onload = (event) => {
+                    const img = new Image();
+                    img.src = event.target.result;
+                    img.onload = () => {
+                        const canvas = document.createElement('canvas');
+                        const MAX_WIDTH = 300; const scaleSize = MAX_WIDTH / img.width;
+                        canvas.width = MAX_WIDTH; canvas.height = img.height * scaleSize;
+                        const ctx = canvas.getContext('2d'); ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                        resolve(canvas.toDataURL('image/jpeg', 0.7)); 
+                    };
+                };
+                reader.onerror = (error) => reject(error);
+            });
+        }
+        window.saveProfileChanges = async (e) => {
+            e.preventDefault();
+            const btn = document.getElementById('save-profile-btn');
+            btn.disabled = true; btn.innerText = "Saving...";
+            const name = document.getElementById('edit-name').value.trim();
+            const username = document.getElementById('edit-username').value.trim().toLowerCase();
+            const bio = document.getElementById('edit-bio').value.trim();
+            const imgInput = document.getElementById('edit-img-input');
+            const newPic = imgInput.dataset.base64 || null;
+            if(!username.match(/^[a-z0-9_]{3,15}$/)) { btn.disabled = false; btn.innerText = "Save"; return alert("Username must be 3-15 chars, lowercase letters/numbers only."); }
+            try {
+                if(username !== currentUserProfile?.username) {
+                    const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'users'), where("username", "==", username));
+                    const snap = await getDocs(q);
+                    if(!snap.empty && snap.docs[0].id !== currentUser.uid) throw new Error("Username already taken.");
+                }
+                const userData = { displayName: name, username: username, bio: bio, updatedAt: serverTimestamp() };
+                if(newPic) userData.photoBase64 = newPic;
+                await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'users', currentUser.uid), userData, { merge: true });
+                await updateProfile(currentUser, { displayName: name });
+                currentUserProfile = { ...currentUserProfile, ...userData };
+                closeEditModal(); renderProfile(currentUser.uid);
+            } catch(err) { alert(err.message); } finally { btn.disabled = false; btn.innerText = "Save"; }
+        };
+
+        // --- ACTIONS & UTILS ---
+        window.deleteContent = async (collectionName, id) => {
+            if(!confirm("Delete this content?")) return;
+            try {
+                await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', collectionName, id));
+                if(currentView === 'watch' && viewedItem?.id === id) window.navigateTo('home');
+                else if (currentView === 'read' && viewedItem?.id === id) window.navigateTo('articles');
+                else if (currentView === 'profile') renderProfile(currentUser.uid);
+            } catch(e) { alert("Error deleting: " + e.message); }
+        };
+        // Watch/Read Logic
         function loadVideoPlayer(video) {
             updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'videos', video.id), { views: increment(1) });
             document.getElementById('player-embed').innerHTML = video.embedCode;
@@ -591,13 +574,9 @@
             document.getElementById('watch-like-count').textContent = video.likes || 0;
             document.getElementById('watch-like-btn').onclick = () => window.toggleLike('videos', video.id);
             const ownerActions = document.getElementById('watch-owner-actions');
-            if(currentUser && currentUser.uid === video.authorId) {
-                ownerActions.innerHTML = `<button onclick="window.deleteContent('videos', '${video.id}')" class="bg-red-900/30 text-red-400 px-3 py-1 rounded text-xs hover:bg-red-900/50">Delete Video</button>`;
-            } else {
-                ownerActions.innerHTML = '';
-            }
+            if(currentUser && currentUser.uid === video.authorId) ownerActions.innerHTML = `<button onclick="window.deleteContent('videos', '${video.id}')" class="bg-red-900/30 text-red-400 px-3 py-1 rounded text-xs hover:bg-red-900/50">Delete Video</button>`;
+            else ownerActions.innerHTML = '';
         }
-
         function loadArticleReader(article) {
             updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'posts', article.id), { views: increment(1) });
             document.getElementById('read-title').textContent = article.title;
@@ -606,206 +585,35 @@
             document.getElementById('read-like-count').textContent = article.likes || 0;
             document.getElementById('read-like-btn').onclick = () => window.toggleLike('posts', article.id);
         }
-
-        // --- UPLOAD LOGIC ---
-        window.switchStudioTab = (tab) => {
-            ['video','article','community'].forEach(t => {
-                document.getElementById(`studio-form-${t}`).classList.add('hidden');
-                document.getElementById(`studio-tab-${t}`).className = "flex-1 py-3 text-sm font-medium text-gray-400 hover:text-white transition-colors border-b-2 border-transparent";
-            });
-            document.getElementById(`studio-form-${tab}`).classList.remove('hidden');
-            document.getElementById(`studio-tab-${tab}`).className = "flex-1 py-3 text-sm font-medium text-white border-b-2 border-red-600";
-        };
-
-        window.toggleVideoInput = (mode) => {
-            if(mode === 'link') {
-                document.getElementById('inp-vid-url').classList.remove('hidden');
-                document.getElementById('inp-vid-embed').classList.add('hidden');
-                document.getElementById('inp-vid-thumb').classList.add('hidden');
-            } else {
-                document.getElementById('inp-vid-url').classList.add('hidden');
-                document.getElementById('inp-vid-embed').classList.remove('hidden');
-                document.getElementById('inp-vid-thumb').classList.remove('hidden'); // Show thumb input for embeds
-            }
-        };
-
-        window.publish = async (type) => {
-            if(!currentUser) return alert("Please login.");
-            const btn = document.getElementById(`btn-pub-${type}`);
-            btn.disabled = true; btn.textContent = "Publishing...";
-            
-            try {
-                if(type === 'video') {
-                    const title = document.getElementById('inp-vid-title').value;
-                    const mode = document.querySelector('input[name="vid-mode"]:checked').value;
-                    let embedCode = "";
-                    let originalLink = "";
-                    let customThumb = "";
-
-                    if (mode === 'link') {
-                        originalLink = document.getElementById('inp-vid-url').value;
-                        if(!originalLink) throw new Error("Link required");
-                        const ytMatch = originalLink.match(/(?:youtube\.com\/.*v=|youtu\.be\/)([^"&?\/\s]{11})/);
-                        if (ytMatch) {
-                            embedCode = `<iframe width="100%" height="100%" src="https://www.youtube.com/embed/${ytMatch[1]}" frameborder="0" allowfullscreen></iframe>`;
-                        } else {
-                            throw new Error("Only YouTube links supported in 'Link' mode. Use 'Embed Code' for others.");
-                        }
-                    } else {
-                        embedCode = document.getElementById('inp-vid-embed').value;
-                        customThumb = document.getElementById('inp-vid-thumb').value;
-                        if(!embedCode) throw new Error("Embed code required");
-                    }
-                    
-                    if(!title) throw new Error("Title required");
-
-                    await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'videos'), {
-                        title, description: document.getElementById('inp-vid-desc').value,
-                        embedCode, originalLink, customThumb,
-                        authorId: currentUser.uid, authorName: currentUser.displayName,
-                        likes: 0, views: 0, createdAt: serverTimestamp()
-                    });
-                    window.navigateTo('home');
-                } else if (type === 'article') {
-                    await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'posts'), {
-                        title: document.getElementById('inp-art-title').value,
-                        content: document.getElementById('inp-art-content').value,
-                        authorId: currentUser.uid, authorName: currentUser.displayName,
-                        likes: 0, views: 0, createdAt: serverTimestamp()
-                    });
-                    window.navigateTo('articles');
-                } else if (type === 'community') {
-                    await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'community'), {
-                        content: document.getElementById('inp-comm-text').value,
-                        imageUrl: document.getElementById('inp-comm-img').value,
-                        authorId: currentUser.uid, authorName: currentUser.displayName,
-                        likes: 0, createdAt: serverTimestamp()
-                    });
-                    window.navigateTo('community');
-                }
-                document.querySelectorAll('input, textarea').forEach(el => el.value = '');
-            } catch(e) { alert(e.message); }
-            finally { btn.disabled = false; btn.textContent = "Publish"; }
-        };
-
-        // --- NOTIFICATIONS FIX (Auto Clean + Click to Delete) ---
+        // Notification
         async function loadNotifications() {
-            const q = query(
-                collection(db, 'artifacts', appId, 'public', 'data', 'notifications'), 
-                where("targetUserId", "==", currentUser.uid),
-                orderBy("createdAt", "desc"),
-                limit(50) // Fetch more to check for old ones
-            );
+            const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'notifications'), where("targetUserId", "==", currentUser.uid), orderBy("createdAt", "desc"), limit(50));
             onSnapshot(q, (snap) => {
-                const list = [];
-                const now = new Date();
-                const tenDaysMs = 10 * 24 * 60 * 60 * 1000;
-                let hasUnread = false;
-
+                const list = []; const now = new Date(); const tenDaysMs = 10 * 24 * 60 * 60 * 1000;
                 snap.docs.forEach(docSnap => {
                     const data = docSnap.data();
-                    
-                    // AUTO DELETE 10+ DAYS OLD
-                    if (data.createdAt && (now - data.createdAt.toDate()) > tenDaysMs) {
-                        deleteDoc(docSnap.ref); // Cleanup old
-                    } else {
-                        list.push({ id: docSnap.id, ...data });
-                        if(!data.read) hasUnread = true; // Simple unread check logic
-                    }
+                    if (data.createdAt && (now - data.createdAt.toDate()) > tenDaysMs) deleteDoc(docSnap.ref);
+                    else list.push({ id: docSnap.id, ...data });
                 });
-
-                if (list.length > 0) document.getElementById('notif-badge').classList.remove('hidden'); 
-                else document.getElementById('notif-badge').classList.add('hidden');
-                
+                if (list.length > 0) document.getElementById('notif-badge').classList.remove('hidden'); else document.getElementById('notif-badge').classList.add('hidden');
                 const container = document.getElementById('notif-list');
                 if(list.length > 0) {
-                    container.innerHTML = list.map(n => `
-                        <div class="px-4 py-3 hover:bg-gray-800 border-b border-gray-800 last:border-0 relative group">
-                            <div onclick="window.handleNotifClick('${n.type}', '${n.contentId}', '${n.contentType}', '${n.actorId}')" class="cursor-pointer pr-6">
-                                <p class="text-sm text-gray-300">
-                                    <span class="font-bold text-white">${escapeHtml(n.actorName)}</span> 
-                                    ${n.type === 'follow' ? 'subscribed to you.' : `commented on "${escapeHtml(n.contentTitle || 'your post')}"`}
-                                </p>
-                                <p class="text-[10px] text-gray-500 mt-1">${timeAgo(n.createdAt)}</p>
-                            </div>
-                            <button onclick="window.deleteNotification(event, '${n.id}')" class="absolute right-2 top-3 text-gray-500 hover:text-white opacity-0 group-hover:opacity-100 transition-opacity p-1">
-                                <i data-lucide="x" class="w-3 h-3"></i>
-                            </button>
-                        </div>
-                    `).join('');
+                    container.innerHTML = list.map(n => `<div class="px-4 py-3 hover:bg-gray-800 border-b border-gray-800 last:border-0 relative group"><div onclick="window.handleNotifClick('${n.type}', '${n.contentId}', '${n.contentType}', '${n.actorId}')" class="cursor-pointer pr-6"><p class="text-sm text-gray-300"><span class="font-bold text-white">${escapeHtml(n.actorName)}</span> ${n.type === 'follow' ? 'started following you.' : `commented on "${escapeHtml(n.contentTitle || 'your post')}"`}</p><p class="text-[10px] text-gray-500 mt-1">${timeAgo(n.createdAt)}</p></div><button onclick="window.deleteNotification(event, '${n.id}')" class="absolute right-2 top-3 text-gray-500 hover:text-white opacity-0 group-hover:opacity-100 transition-opacity p-1"><i data-lucide="x" class="w-3 h-3"></i></button></div>`).join('');
                     lucide.createIcons();
-                } else {
-                    container.innerHTML = '<div class="p-4 text-center text-sm text-gray-500">No new activity.</div>';
-                }
-            }, (e) => console.log("Notif error", e));
-        }
-
-        window.deleteNotification = async (e, id) => {
-            e.stopPropagation();
-            if(confirm("Clear this notification?")) {
-                await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'notifications', id));
-            }
-        };
-
-        window.toggleNotif = () => {
-            const dd = document.getElementById('notif-dropdown');
-            dd.classList.toggle('hidden');
-            if(!dd.classList.contains('hidden')) {
-                document.getElementById('notif-badge').classList.add('hidden'); // Clear badge on open
-            }
-        };
-
-        window.handleNotifClick = (type, cId, cType, actorId) => {
-             document.getElementById('notif-dropdown').classList.add('hidden');
-             if(type === 'follow') window.navigateTo('profile', actorId);
-             else if (type === 'comment' && cId && cType) {
-                 if(cType === 'videos') window.navigateTo('watch', cId);
-                 else if (cType === 'posts') window.navigateTo('read', cId);
-             }
-        }
-
-        // --- BOILERPLATE & HELPERS ---
-        window.handleAuth = async (isLogin) => {
-            const email = document.getElementById('auth-email').value;
-            const pass = document.getElementById('auth-pass').value;
-            try {
-                if(isLogin) await signInWithEmailAndPassword(auth, email, pass);
-                else {
-                    const cred = await createUserWithEmailAndPassword(auth, email, pass);
-                    await updateProfile(cred.user, { displayName: document.getElementById('auth-name').value });
-                }
-                window.navigateTo('home');
-            } catch(e) { alert(e.message); }
-        };
-        window.logout = () => { signOut(auth); window.navigateTo('home'); };
-        window.toggleSidebar = (f) => {
-            const sb = document.getElementById('sidebar'), ov = document.getElementById('sidebar-overlay');
-            if(f!==undefined) { f ? (sb.classList.remove('-translate-x-full'), ov.classList.remove('hidden')) : (sb.classList.add('-translate-x-full'), ov.classList.add('hidden')); }
-            else { sb.classList.toggle('-translate-x-full'); ov.classList.toggle('hidden'); }
-        };
-        function updateUI() {
-            if(currentUser) {
-                document.getElementById('sidebar-user').innerHTML = `<div onclick="window.navigateTo('profile')" class="flex items-center gap-3 px-2 mb-4 cursor-pointer hover:bg-gray-800 p-2 rounded transition-colors"><div class="w-8 h-8 rounded-full bg-red-600 text-white flex items-center justify-center font-bold overflow-hidden">${currentUserProfile?.photoBase64 ? `<img src="${currentUserProfile.photoBase64}" class="w-full h-full object-cover">` : (currentUser.displayName||'U')[0].toUpperCase()}</div><div class="overflow-hidden"><p class="text-sm font-medium text-white truncate">${currentUser.displayName}</p><p class="text-[10px] text-gray-400">View Channel</p></div></div><button onclick="window.logout()" class="w-full text-left text-xs text-gray-400 hover:text-white px-2">Sign Out</button>`;
-            } else {
-                document.getElementById('sidebar-user').innerHTML = `<button onclick="window.navigateTo('auth')" class="w-full bg-red-600 hover:bg-red-700 text-white py-2 rounded text-sm font-bold">Sign In</button>`;
-            }
-        }
-        window.toggleMobileSearch = () => { const b = document.getElementById('mobile-search-bar'); b.classList.toggle('hidden'); if(!b.classList.contains('hidden')) document.getElementById('mobile-search-input').focus(); };
-        window.toggleLike = async (c,id) => { if(!currentUser) return alert("Login needed"); await updateDoc(doc(db,'artifacts',appId,'public','data',c,id),{likes:increment(1)}); const el=document.getElementById(currentView==='watch'?'watch-like-count':(currentView==='read'?'read-like-count':null)); if(el) el.innerText=parseInt(el.innerText)+1; };
-        
-        async function loadComments(targetId) {
-            const list = document.getElementById(currentView === 'watch' ? 'watch-comments' : 'read-comments');
-            list.innerHTML = 'Loading...';
-            // Simple query fallback for stability without index
-            const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'comments'), where("targetId", "==", targetId));
-            onSnapshot(q, (snap) => {
-                const comms = snap.docs.map(d => d.data()).sort((a,b)=>(b.createdAt?.seconds||0)-(a.createdAt?.seconds||0));
-                list.innerHTML = comms.length ? comms.map(c => `<div class="flex gap-3 mb-4"><div class="w-8 h-8 rounded-full bg-gray-700 flex-shrink-0 flex items-center justify-center text-xs font-bold">${(c.authorName||'U')[0].toUpperCase()}</div><div><div class="flex items-center gap-2"><span class="text-xs font-bold text-white">${escapeHtml(c.authorName)}</span><span class="text-[10px] text-gray-500">${timeAgo(c.createdAt)}</span></div><p class="text-sm text-gray-300 mt-1">${escapeHtml(c.text)}</p></div></div>`).join('') : 'No comments yet.';
+                } else container.innerHTML = '<div class="p-4 text-center text-sm text-gray-500">No new activity.</div>';
             });
         }
-        window.postComment = async (e) => { e.preventDefault(); if(!currentUser) return alert("Login needed"); const inp = document.getElementById(currentView==='watch'?'watch-comment-input':'read-comment-input'); if(!inp.value.trim()) return; await addDoc(collection(db,'artifacts',appId,'public','data','comments'),{text:inp.value, targetId:viewedItem.id, authorId:currentUser.uid, authorName:currentUser.displayName, createdAt:serverTimestamp()}); inp.value=''; };
-        window.postInlineComment = async (e,id) => { e.preventDefault(); if(!currentUser) return alert("Login needed"); const inp=e.target.querySelector('input'); if(!inp.value.trim()) return; await addDoc(collection(db,'artifacts',appId,'public','data','comments'),{text:inp.value, targetId:id, authorId:currentUser.uid, authorName:currentUser.displayName, createdAt:serverTimestamp()}); inp.value=''; window.toggleComments('comm-'+id,true); };
-        window.toggleComments = async (divId, force) => { const d=document.getElementById(divId); if(!d.classList.contains('hidden')&&!force) d.classList.add('hidden'); else { d.classList.remove('hidden'); const pid=divId.replace('comm-',''); const list=document.getElementById('comm-list-'+pid); const q=query(collection(db,'artifacts',appId,'public','data','comments'),where('targetId','==',pid)); onSnapshot(q,(s)=>{ const comms=s.docs.map(x=>x.data()).sort((a,b)=>(a.createdAt?.seconds||0)-(b.createdAt?.seconds||0)); list.innerHTML=comms.map(c=>`<p class="text-xs text-gray-300"><b>${escapeHtml(c.authorName)}</b>: ${escapeHtml(c.text)}</p>`).join(''); }); } };
+        window.deleteNotification = async (e, id) => { e.stopPropagation(); if(confirm("Clear this notification?")) await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'notifications', id)); };
+        window.toggleNotif = () => { const dd = document.getElementById('notif-dropdown'); dd.classList.toggle('hidden'); if(!dd.classList.contains('hidden')) document.getElementById('notif-badge').classList.add('hidden'); };
+        window.handleNotifClick = (type, cId, cType, actorId) => { document.getElementById('notif-dropdown').classList.add('hidden'); if(type === 'follow') window.navigateTo('profile', actorId); else if (type === 'comment' && cId && cType) { if(cType === 'videos') window.navigateTo('watch', cId); else if (cType === 'posts') window.navigateTo('read', cId); } };
+        // Upload & Helpers
+        window.switchStudioTab = (t) => { ['video','article','community'].forEach(x => { document.getElementById(`studio-form-${x}`).classList.add('hidden'); document.getElementById(`studio-tab-${x}`).classList.replace('text-white','text-gray-400'); document.getElementById(`studio-tab-${x}`).classList.remove('border-red-600'); }); document.getElementById(`studio-form-${t}`).classList.remove('hidden'); document.getElementById(`studio-tab-${t}`).classList.replace('text-gray-400','text-white'); document.getElementById(`studio-tab-${t}`).classList.add('border-red-600'); };
+        window.toggleVideoInput = (m) => { if(m === 'link') { document.getElementById('inp-vid-url').classList.remove('hidden'); document.getElementById('inp-vid-embed').classList.add('hidden'); document.getElementById('inp-vid-thumb').classList.add('hidden'); } else { document.getElementById('inp-vid-url').classList.add('hidden'); document.getElementById('inp-vid-embed').classList.remove('hidden'); document.getElementById('inp-vid-thumb').classList.remove('hidden'); } };
+        window.handleAuth = async (isLogin) => { const e = document.getElementById('auth-email').value, p = document.getElementById('auth-pass').value; try { if(isLogin) await signInWithEmailAndPassword(auth, e, p); else { const c = await createUserWithEmailAndPassword(auth, e, p); await updateProfile(c.user, { displayName: document.getElementById('auth-name').value }); } window.navigateTo('home'); } catch(err) { alert(err.message); } };
+        window.logout = () => { signOut(auth); window.navigateTo('home'); };
+        window.toggleSidebar = (f) => { const s=document.getElementById('sidebar'), o=document.getElementById('sidebar-overlay'); if(f!==undefined) { f?(s.classList.remove('-translate-x-full'),o.classList.remove('hidden')):(s.classList.add('-translate-x-full'),o.classList.add('hidden')); } else { s.classList.toggle('-translate-x-full'); o.classList.toggle('hidden'); } };
+        window.toggleMobileSearch = () => { const b=document.getElementById('mobile-search-bar'); b.classList.toggle('hidden'); if(!b.classList.contains('hidden')) document.getElementById('mobile-search-input').focus(); };
+        window.toggleLike = async (c,id) => { if(!currentUser) return alert("Login needed"); await updateDoc(doc(db,'artifacts',appId,'public','data',c,id),{likes:increment(1)}); const el=document.getElementById(currentView==='watch'?'watch-like-count':(currentView==='read'?'read-like-count':null)); if(el) el.innerText=parseInt(el.innerText)+1; };
         function timeAgo(t) { if(!t) return 'Just now'; const s=Math.floor((new Date()-t.toDate())/1000); if(s>31536000)return Math.floor(s/31536000)+'y'; if(s>86400)return Math.floor(s/86400)+'d'; if(s>3600)return Math.floor(s/3600)+'h'; if(s>60)return Math.floor(s/60)+'m'; return 'Just now'; }
         function escapeHtml(t) { return t?t.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"): ''; }
 
@@ -821,12 +629,7 @@
             <form onsubmit="window.saveProfileChanges(event)">
                 <div class="flex justify-center mb-6">
                     <div class="relative group cursor-pointer" onclick="document.getElementById('edit-img-input').click()">
-                        <div class="w-24 h-24 rounded-full bg-gray-800 border-2 border-gray-700 flex items-center justify-center overflow-hidden">
-                            <i data-lucide="camera" class="w-8 h-8 text-gray-400"></i>
-                            <div id="edit-preview-container" class="absolute inset-0 hidden">
-                                <img id="edit-preview" class="w-full h-full object-cover">
-                            </div>
-                        </div>
+                        <div class="w-24 h-24 rounded-full bg-gray-800 border-2 border-gray-700 flex items-center justify-center overflow-hidden"><i data-lucide="camera" class="w-8 h-8 text-gray-400"></i><div id="edit-preview-container" class="absolute inset-0 hidden"><img id="edit-preview" class="w-full h-full object-cover"></div></div>
                         <div class="absolute inset-0 bg-black/50 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"><span class="text-xs font-medium">Change</span></div>
                     </div>
                     <input type="file" id="edit-img-input" class="hidden" accept="image/*" onchange="window.previewImage(this)">
@@ -846,16 +649,17 @@
 
     <!-- SIDEBAR -->
     <aside id="sidebar" class="fixed top-0 left-0 z-50 h-screen w-64 bg-gray-950 border-r border-gray-900 transform -translate-x-full md:translate-x-0 transition-transform duration-300 flex flex-col">
-        <div class="h-16 flex items-center px-6 border-b border-gray-900">
-            <div class="flex items-center gap-2 cursor-pointer" onclick="window.navigateTo('home')">
+        <div class="h-16 flex items-center px-6 border-b border-gray-900 cursor-pointer" onclick="window.navigateTo('home')">
+            <div class="flex items-center gap-2">
                 <div class="bg-red-600 text-white p-1 rounded font-bold text-xs">UT</div>
                 <h1 class="font-bold text-lg text-white">Uncensored<span class="text-red-600">Truth</span></h1>
             </div>
         </div>
         <nav class="flex-1 overflow-y-auto py-4 px-3 space-y-1">
             <button onclick="window.navigateTo('home')" id="nav-home" class="nav-item w-full flex items-center gap-4 px-3 py-3 rounded-lg text-sm font-medium sidebar-active"><i data-lucide="home" class="w-5 h-5"></i> Home</button>
+            <button onclick="window.navigateTo('following')" id="nav-following" class="nav-item w-full flex items-center gap-4 px-3 py-3 rounded-lg text-sm font-medium text-gray-400 hover:bg-gray-900"><i data-lucide="users" class="w-5 h-5"></i> Following</button>
             <button onclick="window.navigateTo('articles')" id="nav-articles" class="nav-item w-full flex items-center gap-4 px-3 py-3 rounded-lg text-sm font-medium text-gray-400 hover:bg-gray-900"><i data-lucide="file-text" class="w-5 h-5"></i> Articles</button>
-            <button onclick="window.navigateTo('community')" id="nav-community" class="nav-item w-full flex items-center gap-4 px-3 py-3 rounded-lg text-sm font-medium text-gray-400 hover:bg-gray-900"><i data-lucide="users" class="w-5 h-5"></i> Community</button>
+            <button onclick="window.navigateTo('community')" id="nav-community" class="nav-item w-full flex items-center gap-4 px-3 py-3 rounded-lg text-sm font-medium text-gray-400 hover:bg-gray-900"><i data-lucide="message-square" class="w-5 h-5"></i> Community</button>
             <div class="my-4 border-t border-gray-900"></div>
             <button onclick="window.navigateTo('studio')" id="nav-studio" class="nav-item w-full flex items-center gap-4 px-3 py-3 rounded-lg text-sm font-medium text-red-500 hover:bg-red-900/10"><i data-lucide="plus-circle" class="w-5 h-5"></i> Create</button>
         </nav>
@@ -869,13 +673,10 @@
             <div class="flex items-center gap-4 flex-1">
                 <button onclick="window.toggleSidebar()" class="md:hidden text-white"><i data-lucide="menu" class="w-6 h-6"></i></button>
                 
-                <!-- MOBILE LOGO (NEW) -->
+                <!-- MOBILE LOGO -->
                 <div class="md:hidden flex items-center gap-2 cursor-pointer ml-2" onclick="window.navigateTo('home')">
                     <div class="bg-red-600 text-white p-0.5 rounded text-[10px] font-bold">UT</div>
-                    <div class="flex flex-col leading-none">
-                        <span class="font-bold text-xs text-white">Uncensored</span>
-                        <span class="font-bold text-xs text-red-600">Truth</span>
-                    </div>
+                    <div class="flex flex-col leading-none"><span class="font-bold text-xs text-white">Uncensored</span><span class="font-bold text-xs text-red-600">Truth</span></div>
                 </div>
 
                 <!-- Desktop Search -->
@@ -886,9 +687,7 @@
             </div>
             
             <div class="flex items-center gap-4 relative">
-                <!-- Mobile Search Toggle -->
                 <button onclick="window.toggleMobileSearch()" class="md:hidden text-white"><i data-lucide="search" class="w-5 h-5"></i></button>
-                <!-- Notification Bell -->
                 <div class="relative">
                     <button onclick="window.toggleNotif()" class="text-gray-400 hover:text-white relative"><i data-lucide="bell" class="w-5 h-5"></i><div id="notif-badge" class="hidden absolute -top-1 -right-1 w-2.5 h-2.5 bg-red-600 rounded-full border border-gray-950"></div></button>
                     <div id="notif-dropdown" class="hidden absolute right-0 top-10 w-72 bg-gray-900 border border-gray-800 rounded-xl shadow-xl overflow-hidden z-50">
@@ -912,16 +711,18 @@
                     <h2 id="feed-title" class="text-xl font-bold flex items-center"></h2>
                     <div id="feed-sort-container" class="hidden">
                         <select onchange="window.setGlobalSort(this.value)" class="bg-gray-900 text-sm text-gray-400 border-none outline-none focus:ring-0 cursor-pointer">
-                            <option value="latest">Latest</option>
-                            <option value="popular">Most Viewed</option>
-                            <option value="trending">Trending</option>
-                            <option value="oldest">Oldest</option>
+                            <option value="latest">Latest</option><option value="popular">Most Viewed</option><option value="trending">Trending</option><option value="oldest">Oldest</option>
                         </select>
                     </div>
                 </div>
                 <div id="feed-grid"></div>
             </section>
             
+            <section id="view-following" class="view-section hidden">
+                <h2 class="text-xl font-bold mb-6 flex items-center"><i data-lucide="users" class="inline mr-2 text-red-600"></i> Following Feed</h2>
+                <div id="following-feed" class="space-y-4 max-w-4xl mx-auto"></div>
+            </section>
+
             <section id="view-search" class="view-section hidden max-w-4xl mx-auto">
                 <div class="flex gap-2 mb-6 overflow-x-auto pb-2 scrollbar-hide">
                     <button id="filter-btn-all" onclick="window.setSearchFilter('all')" class="filter-btn px-4 py-1.5 rounded-lg text-sm font-medium transition-colors border border-transparent cursor-pointer whitespace-nowrap bg-gray-100 text-black">All</button>
@@ -971,22 +772,10 @@
                     <div class="p-6">
                         <div id="studio-form-video">
                             <input id="inp-vid-title" class="w-full bg-gray-950 border border-gray-800 rounded p-3 mb-4 text-white" placeholder="Video Title" autocomplete="off">
-                            
-                            <div class="flex gap-4 mb-3">
-                                <label class="flex items-center gap-2 cursor-pointer">
-                                    <input type="radio" name="vid-mode" value="link" checked onchange="window.toggleVideoInput('link')" class="accent-red-600">
-                                    <span class="text-sm text-gray-300">YouTube Link</span>
-                                </label>
-                                <label class="flex items-center gap-2 cursor-pointer">
-                                    <input type="radio" name="vid-mode" value="embed" onchange="window.toggleVideoInput('embed')" class="accent-red-600">
-                                    <span class="text-sm text-gray-300">Embed Code</span>
-                                </label>
-                            </div>
-
+                            <div class="flex gap-4 mb-3"><label class="flex items-center gap-2 cursor-pointer"><input type="radio" name="vid-mode" value="link" checked onchange="window.toggleVideoInput('link')" class="accent-red-600"><span class="text-sm text-gray-300">YouTube Link</span></label><label class="flex items-center gap-2 cursor-pointer"><input type="radio" name="vid-mode" value="embed" onchange="window.toggleVideoInput('embed')" class="accent-red-600"><span class="text-sm text-gray-300">Embed Code</span></label></div>
                             <input id="inp-vid-url" class="w-full bg-gray-950 border border-gray-800 rounded p-3 mb-3 text-white" placeholder="https://youtube.com/watch?v=..." autocomplete="off">
                             <textarea id="inp-vid-embed" class="w-full bg-gray-950 border border-gray-800 rounded p-3 mb-3 text-white font-mono text-sm hidden" rows="3" placeholder="<iframe...>" autocomplete="off"></textarea>
                             <input id="inp-vid-thumb" class="w-full bg-gray-950 border border-gray-800 rounded p-3 mb-3 text-white hidden" placeholder="Thumbnail Image URL (Optional)" autocomplete="off">
-                            
                             <textarea id="inp-vid-desc" class="w-full bg-gray-950 border border-gray-800 rounded p-3 mb-4 text-white" rows="3" placeholder="Description" autocomplete="off"></textarea>
                             <button id="btn-pub-video" onclick="window.publish('video')" class="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-3 rounded">Publish Video</button>
                         </div>
