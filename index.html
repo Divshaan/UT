@@ -868,13 +868,27 @@
         <header class="h-16 sticky top-0 z-30 bg-gray-950/90 backdrop-blur border-b border-gray-900 flex items-center justify-between px-4">
             <div class="flex items-center gap-4 flex-1">
                 <button onclick="window.toggleSidebar()" class="md:hidden text-white"><i data-lucide="menu" class="w-6 h-6"></i></button>
+                
+                <!-- MOBILE LOGO (NEW) -->
+                <div class="md:hidden flex items-center gap-2 cursor-pointer ml-2" onclick="window.navigateTo('home')">
+                    <div class="bg-red-600 text-white p-0.5 rounded text-[10px] font-bold">UT</div>
+                    <div class="flex flex-col leading-none">
+                        <span class="font-bold text-xs text-white">Uncensored</span>
+                        <span class="font-bold text-xs text-red-600">Truth</span>
+                    </div>
+                </div>
+
+                <!-- Desktop Search -->
                 <div class="hidden md:flex relative w-96 max-w-full">
                     <input id="search-input-desktop" type="text" onkeypress="window.handleSearchKey(event, this.value)" placeholder="Search..." class="w-full bg-gray-900 border border-gray-800 rounded-full py-2 pl-4 pr-10 text-sm focus:border-red-600 outline-none" autocomplete="off">
                     <button onclick="window.triggerSearch(document.getElementById('search-input-desktop').value)" class="absolute right-3 top-2.5 text-gray-400 hover:text-white"><i data-lucide="search" class="w-4 h-4"></i></button>
                 </div>
             </div>
+            
             <div class="flex items-center gap-4 relative">
+                <!-- Mobile Search Toggle -->
                 <button onclick="window.toggleMobileSearch()" class="md:hidden text-white"><i data-lucide="search" class="w-5 h-5"></i></button>
+                <!-- Notification Bell -->
                 <div class="relative">
                     <button onclick="window.toggleNotif()" class="text-gray-400 hover:text-white relative"><i data-lucide="bell" class="w-5 h-5"></i><div id="notif-badge" class="hidden absolute -top-1 -right-1 w-2.5 h-2.5 bg-red-600 rounded-full border border-gray-950"></div></button>
                     <div id="notif-dropdown" class="hidden absolute right-0 top-10 w-72 bg-gray-900 border border-gray-800 rounded-xl shadow-xl overflow-hidden z-50">
