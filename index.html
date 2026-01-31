@@ -59,7 +59,7 @@
         let currentComments = [];
         let searchQuery = "";
         let searchFilter = "all";
-        let globalSort = "latest"; // latest, popular, oldest, trending
+        let globalSort = "latest"; 
         let profileSort = "latest"; 
         
         // --- AUTH ---
@@ -88,7 +88,6 @@
                 allContent[col] = snap.docs.map(d => ({ id: d.id, type: col, ...d.data() }));
                 refreshCurrentView();
             }, (err) => {
-                // Fallback for missing index
                 const fallbackQ = query(collection(db, 'artifacts', appId, 'public', 'data', col), limit(100));
                 onSnapshot(fallbackQ, (snap) => {
                      allContent[col] = snap.docs.map(d => ({ id: d.id, type: col, ...d.data() }))
@@ -175,7 +174,6 @@
         }
 
         function applySort(list) {
-            // Create a copy to sort
             let sorted = [...list];
             if (globalSort === 'latest') {
                 sorted.sort((a,b) => (b.createdAt?.seconds||0) - (a.createdAt?.seconds||0));
@@ -184,7 +182,6 @@
             } else if (globalSort === 'popular') {
                 sorted.sort((a,b) => (b.views||0) - (a.views||0));
             } else if (globalSort === 'trending') {
-                // Simple trending: likes
                 sorted.sort((a,b) => (b.likes||0) - (a.likes||0));
             }
             return sorted;
@@ -194,7 +191,7 @@
             const grid = document.getElementById('feed-grid');
             const title = document.getElementById('feed-title');
             const sortContainer = document.getElementById('feed-sort-container');
-            sortContainer.classList.remove('hidden'); // Show sort on feeds
+            sortContainer.classList.remove('hidden'); 
             
             if(currentView === 'home') {
                 title.innerHTML = '<i data-lucide="play-circle" class="inline mr-2 text-red-600"></i>Videos';
@@ -226,7 +223,7 @@
         }
 
         function renderSearchResults() {
-            document.getElementById('feed-sort-container').classList.add('hidden'); // Hide generic sort on search
+            document.getElementById('feed-sort-container').classList.add('hidden');
             const container = document.getElementById('search-results');
             const q = searchQuery.toLowerCase();
             let results = [];
@@ -251,18 +248,22 @@
         function renderSearchCard(item) {
             let thumb = '', meta = '', action = '', type = '';
             if (item.type === 'videos') {
-                const url = getThumbnail(item.originalLink||'');
-                thumb = url ? `<img src="${url}" class="w-full h-full object-cover">` : `<div class="w-full h-full flex items-center justify-center bg-gray-800"><i data-lucide="play" class="w-8 h-8 text-gray-500"></i></div>`;
+                const url = item.customThumb || getThumbnail(item.originalLink||'');
+                // FALLBACK: If no URL found, show styled div
+                thumb = url ? 
+                    `<img src="${url}" class="w-full h-full object-cover">` : 
+                    `<div class="w-full h-full flex items-center justify-center bg-gradient-to-br from-gray-800 to-gray-900 border-r border-gray-700"><i data-lucide="play" class="w-8 h-8 text-gray-500"></i></div>`;
+                
                 meta = `${item.views||0} views • ${timeAgo(item.createdAt)}`;
                 action = `window.navigateTo('watch', '${item.id}')`;
                 type = 'Video';
             } else if (item.type === 'posts') {
-                thumb = `<div class="w-full h-full flex items-center justify-center bg-gray-800"><i data-lucide="file-text" class="w-8 h-8 text-blue-500"></i></div>`;
+                thumb = `<div class="w-full h-full flex items-center justify-center bg-gradient-to-br from-blue-900/20 to-gray-900 border-r border-gray-700"><i data-lucide="file-text" class="w-8 h-8 text-blue-500"></i></div>`;
                 meta = `Read • ${timeAgo(item.createdAt)}`;
                 action = `window.navigateTo('read', '${item.id}')`;
                 type = 'Article';
             } else {
-                thumb = item.imageUrl ? `<img src="${item.imageUrl}" class="w-full h-full object-cover">` : `<div class="w-full h-full flex items-center justify-center bg-gray-800"><i data-lucide="users" class="w-8 h-8 text-green-500"></i></div>`;
+                thumb = item.imageUrl ? `<img src="${item.imageUrl}" class="w-full h-full object-cover">` : `<div class="w-full h-full flex items-center justify-center bg-gradient-to-br from-green-900/20 to-gray-900 border-r border-gray-700"><i data-lucide="users" class="w-8 h-8 text-green-500"></i></div>`;
                 meta = `Buzz • ${timeAgo(item.createdAt)}`;
                 action = `window.navigateTo('community')`;
                 type = 'Buzz';
@@ -270,7 +271,7 @@
 
             return `
                 <div onclick="${action}" class="flex flex-col sm:flex-row gap-4 cursor-pointer hover:bg-gray-900/50 p-2 rounded-lg transition-colors">
-                    <div class="w-full sm:w-64 aspect-video flex-shrink-0 rounded-lg overflow-hidden relative bg-black">${thumb} <span class="absolute bottom-1 right-1 bg-black/80 text-white text-[10px] px-1 rounded">${type}</span></div>
+                    <div class="w-full sm:w-64 aspect-video flex-shrink-0 rounded-lg overflow-hidden relative bg-black border border-gray-800">${thumb} <span class="absolute bottom-1 right-1 bg-black/80 text-white text-[10px] px-1 rounded">${type}</span></div>
                     <div class="flex-1">
                         <h3 class="text-white font-medium text-lg mb-1 line-clamp-2">${escapeHtml(item.title || item.content)}</h3>
                         <div class="text-xs text-gray-400 mb-2">${meta}</div>
@@ -368,7 +369,7 @@
             else if (profileSort === 'popular') myVideos.sort((a,b) => (b.views||0) - (a.views||0));
 
             container.innerHTML = '';
-            renderVideos(myVideos, container, isMe); // Pass isMe for delete button
+            renderVideos(myVideos, container, isMe); 
             lucide.createIcons();
         }
 
@@ -459,37 +460,47 @@
             }
         };
 
-        // --- DELETION LOGIC ---
         window.deleteContent = async (collectionName, id) => {
-            if(!confirm("Are you sure you want to delete this content? This cannot be undone.")) return;
+            if(!confirm("Delete this content?")) return;
             try {
                 await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', collectionName, id));
-                // If currently watching/reading it, go home
                 if(currentView === 'watch' && viewedItem?.id === id) window.navigateTo('home');
                 else if (currentView === 'read' && viewedItem?.id === id) window.navigateTo('articles');
-                else if (currentView === 'profile') renderProfile(currentUser.uid); // Refresh profile if deleting from grid
-            } catch(e) {
-                alert("Error deleting: " + e.message);
-            }
+                else if (currentView === 'profile') renderProfile(currentUser.uid);
+            } catch(e) { alert("Error deleting: " + e.message); }
         };
 
         // --- RENDERERS ---
         function getThumbnail(url) {
+            // Updated to support YT and Dailymotion
             const ytMatch = url.match(/(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/);
             if(ytMatch) return `https://img.youtube.com/vi/${ytMatch[1]}/mqdefault.jpg`;
+            
+            const dmMatch = url.match(/dailymotion.com\/video\/([a-zA-Z0-9]+)/);
+            if(dmMatch) return `https://www.dailymotion.com/thumbnail/video/${dmMatch[1]}`;
+            
             return null;
         }
 
         function renderVideos(list, container, isOwner = false) {
             container.className = "grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4";
-            container.innerHTML = list.length ? list.map(v => `
+            container.innerHTML = list.length ? list.map(v => {
+                // AUTO FALLBACK SYSTEM
+                const thumbUrl = v.customThumb || getThumbnail(v.originalLink || '') || '';
+                
+                // If we have a URL, show image. If NOT, show cool gradient placeholder.
+                const thumbnail = thumbUrl ? 
+                    `<img src="${thumbUrl}" class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300">` : 
+                    `<div class="w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-gray-800 to-gray-900 group-hover:from-gray-700 group-hover:to-gray-800 transition-colors">
+                        <i data-lucide="play" class="w-10 h-10 text-gray-600 mb-2"></i>
+                        <span class="text-[10px] text-gray-500 uppercase tracking-widest font-bold">Preview</span>
+                     </div>`;
+
+                return `
                 <div class="group cursor-pointer relative">
                     <div onclick="window.navigateTo('watch', '${v.id}')">
-                        <div class="relative aspect-video bg-gray-900 rounded-xl overflow-hidden mb-3 border border-gray-800">
-                            ${getThumbnail(v.originalLink || '') ? 
-                                `<img src="${getThumbnail(v.originalLink)}" class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300">` : 
-                                `<div class="w-full h-full flex items-center justify-center text-gray-700 bg-black"><i data-lucide="play" class="w-12 h-12"></i></div>`
-                            }
+                        <div class="relative aspect-video bg-black rounded-xl overflow-hidden mb-3 border border-gray-800 shadow-sm">
+                            ${thumbnail}
                             <div class="absolute bottom-2 right-2 bg-black/80 text-white text-xs px-1.5 py-0.5 rounded font-mono">Video</div>
                         </div>
                         <div class="flex gap-3">
@@ -513,7 +524,7 @@
                         </button>
                     ` : ''}
                 </div>
-            `).join('') : '<div class="col-span-full text-center text-gray-500 py-10">No videos found.</div>';
+            `}).join('') : '<div class="col-span-full text-center text-gray-500 py-10">No videos found.</div>';
             lucide.createIcons();
         }
 
@@ -577,7 +588,7 @@
             lucide.createIcons();
         }
 
-        // --- WATCH / READ LOGIC (RESTORED) ---
+        // --- WATCH / READ LOGIC ---
         function loadVideoPlayer(video) {
             updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'videos', video.id), { views: increment(1) });
             document.getElementById('player-embed').innerHTML = video.embedCode;
@@ -587,8 +598,6 @@
             document.getElementById('watch-desc').textContent = video.description;
             document.getElementById('watch-like-count').textContent = video.likes || 0;
             document.getElementById('watch-like-btn').onclick = () => window.toggleLike('videos', video.id);
-            
-            // Delete button for Watch page
             const ownerActions = document.getElementById('watch-owner-actions');
             if(currentUser && currentUser.uid === video.authorId) {
                 ownerActions.innerHTML = `<button onclick="window.deleteContent('videos', '${video.id}')" class="bg-red-900/30 text-red-400 px-3 py-1 rounded text-xs hover:bg-red-900/50">Delete Video</button>`;
@@ -606,7 +615,7 @@
             document.getElementById('read-like-btn').onclick = () => window.toggleLike('posts', article.id);
         }
 
-        // --- UPLOAD LOGIC (IMPROVED) ---
+        // --- UPLOAD LOGIC ---
         window.switchStudioTab = (tab) => {
             ['video','article','community'].forEach(t => {
                 document.getElementById(`studio-form-${t}`).classList.add('hidden');
@@ -620,9 +629,11 @@
             if(mode === 'link') {
                 document.getElementById('inp-vid-url').classList.remove('hidden');
                 document.getElementById('inp-vid-embed').classList.add('hidden');
+                document.getElementById('inp-vid-thumb').classList.add('hidden');
             } else {
                 document.getElementById('inp-vid-url').classList.add('hidden');
                 document.getElementById('inp-vid-embed').classList.remove('hidden');
+                document.getElementById('inp-vid-thumb').classList.remove('hidden'); // Show thumb input for embeds
             }
         };
 
@@ -637,6 +648,7 @@
                     const mode = document.querySelector('input[name="vid-mode"]:checked').value;
                     let embedCode = "";
                     let originalLink = "";
+                    let customThumb = "";
 
                     if (mode === 'link') {
                         originalLink = document.getElementById('inp-vid-url').value;
@@ -645,11 +657,11 @@
                         if (ytMatch) {
                             embedCode = `<iframe width="100%" height="100%" src="https://www.youtube.com/embed/${ytMatch[1]}" frameborder="0" allowfullscreen></iframe>`;
                         } else {
-                            // Basic link fallback (warning to user usually needed, but auto-embed logic is hard without specific providers)
                             throw new Error("Only YouTube links supported in 'Link' mode. Use 'Embed Code' for others.");
                         }
                     } else {
                         embedCode = document.getElementById('inp-vid-embed').value;
+                        customThumb = document.getElementById('inp-vid-thumb').value;
                         if(!embedCode) throw new Error("Embed code required");
                     }
                     
@@ -657,7 +669,7 @@
 
                     await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'videos'), {
                         title, description: document.getElementById('inp-vid-desc').value,
-                        embedCode, originalLink,
+                        embedCode, originalLink, customThumb,
                         authorId: currentUser.uid, authorName: currentUser.displayName,
                         likes: 0, views: 0, createdAt: serverTimestamp()
                     });
@@ -939,6 +951,7 @@
 
                             <input id="inp-vid-url" class="w-full bg-gray-950 border border-gray-800 rounded p-3 mb-3 text-white" placeholder="https://youtube.com/watch?v=..." autocomplete="off">
                             <textarea id="inp-vid-embed" class="w-full bg-gray-950 border border-gray-800 rounded p-3 mb-3 text-white font-mono text-sm hidden" rows="3" placeholder="<iframe...>" autocomplete="off"></textarea>
+                            <input id="inp-vid-thumb" class="w-full bg-gray-950 border border-gray-800 rounded p-3 mb-3 text-white hidden" placeholder="Thumbnail Image URL (Optional)" autocomplete="off">
                             
                             <textarea id="inp-vid-desc" class="w-full bg-gray-950 border border-gray-800 rounded p-3 mb-4 text-white" rows="3" placeholder="Description" autocomplete="off"></textarea>
                             <button id="btn-pub-video" onclick="window.publish('video')" class="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-3 rounded">Publish Video</button>
