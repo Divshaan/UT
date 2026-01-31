@@ -667,6 +667,63 @@
             document.getElementById('read-like-btn').onclick = () => window.toggleLike('posts', article.id);
         }
 
+        // --- COMMENTS (RESTORED) ---
+        async function loadComments(targetId) {
+            const list = document.getElementById(currentView === 'watch' ? 'watch-comments' : 'read-comments');
+            list.innerHTML = 'Loading...';
+            // Simple query fallback for stability without index
+            const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'comments'), where("targetId", "==", targetId));
+            onSnapshot(q, (snap) => {
+                const comms = snap.docs.map(d => d.data()).sort((a,b)=>(b.createdAt?.seconds||0)-(a.createdAt?.seconds||0));
+                list.innerHTML = comms.length ? comms.map(c => `
+                    <div class="flex gap-3 mb-4">
+                        <div class="w-8 h-8 rounded-full bg-gray-700 flex-shrink-0 flex items-center justify-center text-xs font-bold">${(c.authorName||'U')[0].toUpperCase()}</div>
+                        <div>
+                            <div class="flex items-center gap-2"><span class="text-xs font-bold text-white">${escapeHtml(c.authorName)}</span><span class="text-[10px] text-gray-500">${timeAgo(c.createdAt)}</span></div>
+                            <p class="text-sm text-gray-300 mt-1">${escapeHtml(c.text)}</p>
+                        </div>
+                    </div>`).join('') : 'No comments yet.';
+            });
+        }
+
+        window.postComment = async (e) => { 
+            e.preventDefault(); 
+            if(!currentUser) return alert("Login needed"); 
+            const inp = document.getElementById(currentView==='watch'?'watch-comment-input':'read-comment-input'); 
+            if(!inp.value.trim()) return; 
+            await addDoc(collection(db,'artifacts',appId,'public','data','comments'),{
+                text:inp.value, targetId:viewedItem.id, authorId:currentUser.uid, authorName:currentUser.displayName, createdAt:serverTimestamp()
+            }); 
+            inp.value=''; 
+        };
+
+        window.postInlineComment = async (e,id) => { 
+            e.preventDefault(); 
+            if(!currentUser) return alert("Login needed"); 
+            const inp=e.target.querySelector('input'); 
+            if(!inp.value.trim()) return; 
+            await addDoc(collection(db,'artifacts',appId,'public','data','comments'),{
+                text:inp.value, targetId:id, authorId:currentUser.uid, authorName:currentUser.displayName, createdAt:serverTimestamp()
+            }); 
+            inp.value=''; 
+            window.toggleComments('comm-'+id,true); 
+        };
+
+        window.toggleComments = async (divId, force) => { 
+            const d=document.getElementById(divId); 
+            if(!d.classList.contains('hidden')&&!force) d.classList.add('hidden'); 
+            else { 
+                d.classList.remove('hidden'); 
+                const pid=divId.replace('comm-',''); 
+                const list=document.getElementById('comm-list-'+pid); 
+                const q=query(collection(db,'artifacts',appId,'public','data','comments'),where('targetId','==',pid)); 
+                onSnapshot(q,(s)=>{ 
+                    const comms=s.docs.map(x=>x.data()).sort((a,b)=>(a.createdAt?.seconds||0)-(b.createdAt?.seconds||0)); 
+                    list.innerHTML=comms.map(c=>`<p class="text-xs text-gray-300"><b>${escapeHtml(c.authorName)}</b>: ${escapeHtml(c.text)}</p>`).join(''); 
+                }); 
+            } 
+        };
+
         // --- NOTIFICATIONS ---
         async function loadNotifications() {
             const q = query(
