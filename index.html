@@ -54,18 +54,18 @@
 
         // --- STATE ---
         let currentUser = null;
-        let currentUserProfile = null; // Data from 'users' collection
+        let currentUserProfile = null; 
         let allContent = { videos: [], posts: [], community: [] };
         let currentComments = [];
         let searchQuery = "";
         let searchFilter = "all";
-        let profileSort = "latest"; // latest, popular, oldest
+        let globalSort = "latest"; // latest, popular, oldest, trending
+        let profileSort = "latest"; 
         
         // --- AUTH ---
         onAuthStateChanged(auth, async (user) => {
             currentUser = user;
             if(user) {
-                // Fetch extended profile data
                 const userDoc = await getDoc(doc(db, 'artifacts', appId, 'public', 'data', 'users', user.uid));
                 if(userDoc.exists()) currentUserProfile = userDoc.data();
                 loadNotifications();
@@ -81,7 +81,7 @@
             const q = query(
                 collection(db, 'artifacts', appId, 'public', 'data', col), 
                 orderBy('createdAt', 'desc'), 
-                limit(50)
+                limit(100)
             );
             
             onSnapshot(q, (snap) => {
@@ -89,7 +89,7 @@
                 refreshCurrentView();
             }, (err) => {
                 // Fallback for missing index
-                const fallbackQ = query(collection(db, 'artifacts', appId, 'public', 'data', col), limit(50));
+                const fallbackQ = query(collection(db, 'artifacts', appId, 'public', 'data', col), limit(100));
                 onSnapshot(fallbackQ, (snap) => {
                      allContent[col] = snap.docs.map(d => ({ id: d.id, type: col, ...d.data() }))
                         .sort((a,b) => (b.createdAt?.seconds||0) - (a.createdAt?.seconds||0));
@@ -112,7 +112,6 @@
         window.navigateTo = async (view, param = null) => {
             currentView = view;
             
-            // UI Reset
             document.querySelectorAll('.nav-item').forEach(el => {
                 el.classList.remove('sidebar-active', 'text-white');
                 el.classList.add('text-gray-400');
@@ -123,7 +122,6 @@
             document.querySelectorAll('.view-section').forEach(el => el.classList.add('hidden'));
             document.getElementById('mobile-search-bar').classList.add('hidden');
 
-            // Routing
             if(view === 'home' || view === 'articles' || view === 'community') {
                 document.getElementById('view-feed').classList.remove('hidden');
                 refreshFeed();
@@ -170,19 +168,43 @@
             if(window.innerWidth < 768) toggleSidebar(false);
         };
 
+        // --- SORTING ---
+        window.setGlobalSort = (val) => {
+            globalSort = val;
+            refreshFeed();
+        }
+
+        function applySort(list) {
+            // Create a copy to sort
+            let sorted = [...list];
+            if (globalSort === 'latest') {
+                sorted.sort((a,b) => (b.createdAt?.seconds||0) - (a.createdAt?.seconds||0));
+            } else if (globalSort === 'oldest') {
+                sorted.sort((a,b) => (a.createdAt?.seconds||0) - (b.createdAt?.seconds||0));
+            } else if (globalSort === 'popular') {
+                sorted.sort((a,b) => (b.views||0) - (a.views||0));
+            } else if (globalSort === 'trending') {
+                // Simple trending: likes
+                sorted.sort((a,b) => (b.likes||0) - (a.likes||0));
+            }
+            return sorted;
+        }
+
         function refreshFeed() {
             const grid = document.getElementById('feed-grid');
             const title = document.getElementById('feed-title');
+            const sortContainer = document.getElementById('feed-sort-container');
+            sortContainer.classList.remove('hidden'); // Show sort on feeds
             
             if(currentView === 'home') {
                 title.innerHTML = '<i data-lucide="play-circle" class="inline mr-2 text-red-600"></i>Videos';
-                renderVideos(allContent.videos, grid);
+                renderVideos(applySort(allContent.videos), grid);
             } else if (currentView === 'articles') {
                 title.innerHTML = '<i data-lucide="file-text" class="inline mr-2 text-blue-500"></i>Articles';
-                renderArticles(allContent.posts, grid);
+                renderArticles(applySort(allContent.posts), grid);
             } else if (currentView === 'community') {
                 title.innerHTML = '<i data-lucide="users" class="inline mr-2 text-green-500"></i>Community Buzz';
-                renderCommunity(allContent.community, grid);
+                renderCommunity(applySort(allContent.community), grid);
             }
         }
 
@@ -191,15 +213,20 @@
         window.triggerSearch = (val) => { if(val && val.trim()) window.navigateTo('search', val); }
         window.setSearchFilter = (filter) => {
             searchFilter = filter;
-            document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active', 'bg-gray-100', 'text-black'));
-            document.querySelectorAll('.filter-btn').forEach(b => b.classList.add('bg-gray-800', 'text-gray-300'));
+            document.querySelectorAll('.filter-btn').forEach(b => {
+                b.classList.remove('bg-gray-100', 'text-black');
+                b.classList.add('bg-gray-800', 'text-gray-300');
+            });
             const activeBtn = document.getElementById(`filter-btn-${filter}`);
-            activeBtn.classList.remove('bg-gray-800', 'text-gray-300');
-            activeBtn.classList.add('active', 'bg-gray-100', 'text-black');
+            if(activeBtn) {
+                activeBtn.classList.remove('bg-gray-800', 'text-gray-300');
+                activeBtn.classList.add('bg-gray-100', 'text-black');
+            }
             renderSearchResults();
         }
 
         function renderSearchResults() {
+            document.getElementById('feed-sort-container').classList.add('hidden'); // Hide generic sort on search
             const container = document.getElementById('search-results');
             const q = searchQuery.toLowerCase();
             let results = [];
@@ -267,10 +294,9 @@
             container.innerHTML = '<div class="text-center py-10"><i data-lucide="loader-2" class="animate-spin w-8 h-8 text-red-600 mx-auto"></i></div>';
             lucide.createIcons();
 
-            // 1. Get User Details (Optimized)
             let user = null;
             if(currentUser && currentUser.uid === uid && currentUserProfile) {
-                user = currentUserProfile; // Use cached local profile
+                user = currentUserProfile; 
             } else {
                 try {
                     const docSnap = await getDoc(doc(db, 'artifacts', appId, 'public', 'data', 'users', uid));
@@ -278,9 +304,7 @@
                 } catch(e) {}
             }
 
-            // Fallback if user doc doesn't exist (legacy users)
             if(!user) {
-                // Try to infer from content
                 const anyContent = [...allContent.videos, ...allContent.posts].find(c => c.authorId === uid);
                 user = {
                     displayName: anyContent ? anyContent.authorName : "User",
@@ -291,7 +315,6 @@
                 };
             }
 
-            // 2. Get Follow Stats
             let followers = 0;
             let isFollowing = false;
             const fQ = query(collection(db, 'artifacts', appId, 'public', 'data', 'follows'), where("targetId", "==", uid));
@@ -300,9 +323,8 @@
             if(currentUser && fSnap.docs.find(d => d.data().followerId === currentUser.uid)) isFollowing = true;
 
             const isMe = currentUser && currentUser.uid === uid;
-            const isVerified = followers > 10; // Simple verification logic
+            const isVerified = followers > 10; 
 
-            // 3. Render Header
             document.getElementById('profile-header').innerHTML = `
                 <div class="flex flex-col md:flex-row items-center md:items-start gap-6 mb-8 p-6 bg-gray-900/50 rounded-xl border border-gray-800">
                     <div class="w-32 h-32 rounded-full bg-gray-800 flex items-center justify-center text-5xl font-bold text-white border-4 border-gray-950 shadow-xl overflow-hidden shrink-0">
@@ -331,7 +353,6 @@
                     <div class="flex overflow-x-auto">
                         <button class="px-4 py-3 border-b-2 border-white text-white font-medium text-sm">Videos</button>
                     </div>
-                    <!-- Sorting Dropdown -->
                     <select onchange="window.setProfileSort(this.value)" class="bg-gray-900 text-sm text-gray-400 border-none outline-none focus:ring-0 cursor-pointer">
                         <option value="latest" ${profileSort==='latest'?'selected':''}>Latest</option>
                         <option value="popular" ${profileSort==='popular'?'selected':''}>Most Viewed</option>
@@ -340,16 +361,14 @@
                 </div>
             `;
 
-            // 4. Render Content (Sorted)
             let myVideos = allContent.videos.filter(x => x.authorId === uid);
             
-            // Client-side Sort
             if (profileSort === 'latest') myVideos.sort((a,b) => (b.createdAt?.seconds||0) - (a.createdAt?.seconds||0));
             else if (profileSort === 'oldest') myVideos.sort((a,b) => (a.createdAt?.seconds||0) - (b.createdAt?.seconds||0));
             else if (profileSort === 'popular') myVideos.sort((a,b) => (b.views||0) - (a.views||0));
 
             container.innerHTML = '';
-            renderVideos(myVideos, container);
+            renderVideos(myVideos, container, isMe); // Pass isMe for delete button
             lucide.createIcons();
         }
 
@@ -370,12 +389,10 @@
                 const base64 = await compressImage(input.files[0]);
                 document.getElementById('edit-preview').src = base64;
                 document.getElementById('edit-preview-container').classList.remove('hidden');
-                // Store temporarily on the input element to retrieve later
                 input.dataset.base64 = base64; 
             }
         };
 
-        // Core Image Compression Logic
         function compressImage(file) {
             return new Promise((resolve, reject) => {
                 const reader = new FileReader();
@@ -385,14 +402,12 @@
                     img.src = event.target.result;
                     img.onload = () => {
                         const canvas = document.createElement('canvas');
-                        const MAX_WIDTH = 300; // Small enough for Firestore
+                        const MAX_WIDTH = 300;
                         const scaleSize = MAX_WIDTH / img.width;
                         canvas.width = MAX_WIDTH;
                         canvas.height = img.height * scaleSize;
-                        
                         const ctx = canvas.getContext('2d');
                         ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-                        // Compress to JPEG 0.7 quality
                         resolve(canvas.toDataURL('image/jpeg', 0.7)); 
                     };
                 };
@@ -417,18 +432,12 @@
             }
 
             try {
-                // 1. Check Username Uniqueness (if changed)
                 if(username !== currentUserProfile?.username) {
                     const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'users'), where("username", "==", username));
                     const snap = await getDocs(q);
-                    if(!snap.empty) {
-                        // Check if it's someone else's doc
-                        const existing = snap.docs[0];
-                        if(existing.id !== currentUser.uid) throw new Error("Username already taken.");
-                    }
+                    if(!snap.empty && snap.docs[0].id !== currentUser.uid) throw new Error("Username already taken.");
                 }
 
-                // 2. Update Firestore
                 const userData = {
                     displayName: name,
                     username: username,
@@ -437,13 +446,8 @@
                 };
                 if(newPic) userData.photoBase64 = newPic;
                 
-                // Merge true to keep createdAt if it exists
                 await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'users', currentUser.uid), userData, { merge: true });
-
-                // 3. Update Auth Profile (so sidebar updates immediately without refresh)
                 await updateProfile(currentUser, { displayName: name });
-                
-                // Refresh local cache
                 currentUserProfile = { ...currentUserProfile, ...userData };
                 
                 closeEditModal();
@@ -455,44 +459,64 @@
             }
         };
 
+        // --- DELETION LOGIC ---
+        window.deleteContent = async (collectionName, id) => {
+            if(!confirm("Are you sure you want to delete this content? This cannot be undone.")) return;
+            try {
+                await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', collectionName, id));
+                // If currently watching/reading it, go home
+                if(currentView === 'watch' && viewedItem?.id === id) window.navigateTo('home');
+                else if (currentView === 'read' && viewedItem?.id === id) window.navigateTo('articles');
+                else if (currentView === 'profile') renderProfile(currentUser.uid); // Refresh profile if deleting from grid
+            } catch(e) {
+                alert("Error deleting: " + e.message);
+            }
+        };
 
-        // --- GENERIC RENDERERS & HELPERS (Existing) ---
+        // --- RENDERERS ---
         function getThumbnail(url) {
             const ytMatch = url.match(/(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/);
             if(ytMatch) return `https://img.youtube.com/vi/${ytMatch[1]}/mqdefault.jpg`;
             return null;
         }
 
-        function renderVideos(list, container) {
+        function renderVideos(list, container, isOwner = false) {
             container.className = "grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4";
             container.innerHTML = list.length ? list.map(v => `
-                <div onclick="window.navigateTo('watch', '${v.id}')" class="group cursor-pointer">
-                    <div class="relative aspect-video bg-gray-900 rounded-xl overflow-hidden mb-3 border border-gray-800">
-                        ${getThumbnail(v.originalLink || '') ? 
-                            `<img src="${getThumbnail(v.originalLink)}" class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300">` : 
-                            `<div class="w-full h-full flex items-center justify-center text-gray-700 bg-black"><i data-lucide="play" class="w-12 h-12"></i></div>`
-                        }
-                        <div class="absolute bottom-2 right-2 bg-black/80 text-white text-xs px-1.5 py-0.5 rounded font-mono">Video</div>
-                    </div>
-                    <div class="flex gap-3">
-                        <div onclick="event.stopPropagation(); window.navigateTo('profile', '${v.authorId}')" class="flex-shrink-0 cursor-pointer hover:opacity-80">
-                            <div class="w-9 h-9 rounded-full bg-gray-800 flex items-center justify-center text-sm font-bold text-white border border-gray-700">
-                                ${(v.authorName||'U')[0].toUpperCase()}
+                <div class="group cursor-pointer relative">
+                    <div onclick="window.navigateTo('watch', '${v.id}')">
+                        <div class="relative aspect-video bg-gray-900 rounded-xl overflow-hidden mb-3 border border-gray-800">
+                            ${getThumbnail(v.originalLink || '') ? 
+                                `<img src="${getThumbnail(v.originalLink)}" class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300">` : 
+                                `<div class="w-full h-full flex items-center justify-center text-gray-700 bg-black"><i data-lucide="play" class="w-12 h-12"></i></div>`
+                            }
+                            <div class="absolute bottom-2 right-2 bg-black/80 text-white text-xs px-1.5 py-0.5 rounded font-mono">Video</div>
+                        </div>
+                        <div class="flex gap-3">
+                            <div onclick="event.stopPropagation(); window.navigateTo('profile', '${v.authorId}')" class="flex-shrink-0 cursor-pointer hover:opacity-80">
+                                <div class="w-9 h-9 rounded-full bg-gray-800 flex items-center justify-center text-sm font-bold text-white border border-gray-700">
+                                    ${(v.authorName||'U')[0].toUpperCase()}
+                                </div>
+                            </div>
+                            <div class="flex-1 min-w-0">
+                                <h3 class="text-white font-semibold text-sm line-clamp-2 leading-tight group-hover:text-red-500 transition-colors">${escapeHtml(v.title)}</h3>
+                                <div class="text-gray-400 text-xs mt-1">
+                                    <p class="hover:text-gray-300" onclick="event.stopPropagation(); window.navigateTo('profile', '${v.authorId}')">${escapeHtml(v.authorName)}</p>
+                                    <p class="mt-0.5">${v.views||0} views • ${timeAgo(v.createdAt)}</p>
+                                </div>
                             </div>
                         </div>
-                        <div class="flex-1 min-w-0">
-                            <h3 class="text-white font-semibold text-sm line-clamp-2 leading-tight group-hover:text-red-500 transition-colors">${escapeHtml(v.title)}</h3>
-                            <div class="text-gray-400 text-xs mt-1">
-                                <p class="hover:text-gray-300" onclick="event.stopPropagation(); window.navigateTo('profile', '${v.authorId}')">${escapeHtml(v.authorName)}</p>
-                                <p class="mt-0.5">${v.views||0} views • ${timeAgo(v.createdAt)}</p>
-                            </div>
-                        </div>
                     </div>
+                    ${isOwner ? `
+                        <button onclick="window.deleteContent('videos', '${v.id}')" class="absolute top-2 right-2 bg-black/60 p-1.5 rounded text-white hover:bg-red-600 transition-colors z-20">
+                            <i data-lucide="trash-2" class="w-4 h-4"></i>
+                        </button>
+                    ` : ''}
                 </div>
             `).join('') : '<div class="col-span-full text-center text-gray-500 py-10">No videos found.</div>';
             lucide.createIcons();
         }
-        // ... (Other renderers remain same as 3.2, omitted for brevity but included in full file below) ...
+
         function renderArticles(list, container) {
             container.className = "grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6";
             container.innerHTML = list.length ? list.map(a => `
@@ -553,130 +577,215 @@
             lucide.createIcons();
         }
 
-        // --- AUTH UI & HELPERS ---
+        // --- WATCH / READ LOGIC (RESTORED) ---
+        function loadVideoPlayer(video) {
+            updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'videos', video.id), { views: increment(1) });
+            document.getElementById('player-embed').innerHTML = video.embedCode;
+            document.getElementById('watch-title').textContent = video.title;
+            document.getElementById('watch-author').textContent = video.authorName;
+            document.getElementById('watch-author').onclick = () => window.navigateTo('profile', video.authorId);
+            document.getElementById('watch-desc').textContent = video.description;
+            document.getElementById('watch-like-count').textContent = video.likes || 0;
+            document.getElementById('watch-like-btn').onclick = () => window.toggleLike('videos', video.id);
+            
+            // Delete button for Watch page
+            const ownerActions = document.getElementById('watch-owner-actions');
+            if(currentUser && currentUser.uid === video.authorId) {
+                ownerActions.innerHTML = `<button onclick="window.deleteContent('videos', '${video.id}')" class="bg-red-900/30 text-red-400 px-3 py-1 rounded text-xs hover:bg-red-900/50">Delete Video</button>`;
+            } else {
+                ownerActions.innerHTML = '';
+            }
+        }
+
+        function loadArticleReader(article) {
+            updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'posts', article.id), { views: increment(1) });
+            document.getElementById('read-title').textContent = article.title;
+            document.getElementById('read-meta').innerHTML = `By <span class="cursor-pointer hover:text-white hover:underline" onclick="window.navigateTo('profile','${article.authorId}')">${article.authorName}</span> • ${timeAgo(article.createdAt)}`;
+            document.getElementById('read-content').textContent = article.content;
+            document.getElementById('read-like-count').textContent = article.likes || 0;
+            document.getElementById('read-like-btn').onclick = () => window.toggleLike('posts', article.id);
+        }
+
+        // --- UPLOAD LOGIC (IMPROVED) ---
+        window.switchStudioTab = (tab) => {
+            ['video','article','community'].forEach(t => {
+                document.getElementById(`studio-form-${t}`).classList.add('hidden');
+                document.getElementById(`studio-tab-${t}`).className = "flex-1 py-3 text-sm font-medium text-gray-400 hover:text-white transition-colors border-b-2 border-transparent";
+            });
+            document.getElementById(`studio-form-${tab}`).classList.remove('hidden');
+            document.getElementById(`studio-tab-${tab}`).className = "flex-1 py-3 text-sm font-medium text-white border-b-2 border-red-600";
+        };
+
+        window.toggleVideoInput = (mode) => {
+            if(mode === 'link') {
+                document.getElementById('inp-vid-url').classList.remove('hidden');
+                document.getElementById('inp-vid-embed').classList.add('hidden');
+            } else {
+                document.getElementById('inp-vid-url').classList.add('hidden');
+                document.getElementById('inp-vid-embed').classList.remove('hidden');
+            }
+        };
+
+        window.publish = async (type) => {
+            if(!currentUser) return alert("Please login.");
+            const btn = document.getElementById(`btn-pub-${type}`);
+            btn.disabled = true; btn.textContent = "Publishing...";
+            
+            try {
+                if(type === 'video') {
+                    const title = document.getElementById('inp-vid-title').value;
+                    const mode = document.querySelector('input[name="vid-mode"]:checked').value;
+                    let embedCode = "";
+                    let originalLink = "";
+
+                    if (mode === 'link') {
+                        originalLink = document.getElementById('inp-vid-url').value;
+                        if(!originalLink) throw new Error("Link required");
+                        const ytMatch = originalLink.match(/(?:youtube\.com\/.*v=|youtu\.be\/)([^"&?\/\s]{11})/);
+                        if (ytMatch) {
+                            embedCode = `<iframe width="100%" height="100%" src="https://www.youtube.com/embed/${ytMatch[1]}" frameborder="0" allowfullscreen></iframe>`;
+                        } else {
+                            // Basic link fallback (warning to user usually needed, but auto-embed logic is hard without specific providers)
+                            throw new Error("Only YouTube links supported in 'Link' mode. Use 'Embed Code' for others.");
+                        }
+                    } else {
+                        embedCode = document.getElementById('inp-vid-embed').value;
+                        if(!embedCode) throw new Error("Embed code required");
+                    }
+                    
+                    if(!title) throw new Error("Title required");
+
+                    await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'videos'), {
+                        title, description: document.getElementById('inp-vid-desc').value,
+                        embedCode, originalLink,
+                        authorId: currentUser.uid, authorName: currentUser.displayName,
+                        likes: 0, views: 0, createdAt: serverTimestamp()
+                    });
+                    window.navigateTo('home');
+                } else if (type === 'article') {
+                    await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'posts'), {
+                        title: document.getElementById('inp-art-title').value,
+                        content: document.getElementById('inp-art-content').value,
+                        authorId: currentUser.uid, authorName: currentUser.displayName,
+                        likes: 0, views: 0, createdAt: serverTimestamp()
+                    });
+                    window.navigateTo('articles');
+                } else if (type === 'community') {
+                    await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'community'), {
+                        content: document.getElementById('inp-comm-text').value,
+                        imageUrl: document.getElementById('inp-comm-img').value,
+                        authorId: currentUser.uid, authorName: currentUser.displayName,
+                        likes: 0, createdAt: serverTimestamp()
+                    });
+                    window.navigateTo('community');
+                }
+                document.querySelectorAll('input, textarea').forEach(el => el.value = '');
+            } catch(e) { alert(e.message); }
+            finally { btn.disabled = false; btn.textContent = "Publish"; }
+        };
+
+        // --- NOTIFICATIONS FIX ---
+        async function loadNotifications() {
+            const q = query(
+                collection(db, 'artifacts', appId, 'public', 'data', 'notifications'), 
+                where("targetUserId", "==", currentUser.uid),
+                orderBy("createdAt", "desc"),
+                limit(20)
+            );
+            onSnapshot(q, (snap) => {
+                const list = snap.docs.map(d => d.data());
+                // Show badge only if we have notifications. Real app would check 'read' status.
+                if(list.length > 0) document.getElementById('notif-badge').classList.remove('hidden'); 
+                
+                const container = document.getElementById('notif-list');
+                if(list.length > 0) {
+                    container.innerHTML = list.map(n => `
+                        <div onclick="window.handleNotifClick('${n.type}', '${n.contentId}', '${n.contentType}', '${n.actorId}')" class="px-4 py-3 hover:bg-gray-800 border-b border-gray-800 last:border-0 cursor-pointer">
+                            <p class="text-sm text-gray-300">
+                                <span class="font-bold text-white">${escapeHtml(n.actorName)}</span> 
+                                ${n.type === 'follow' ? 'subscribed to you.' : `commented on "${escapeHtml(n.contentTitle || 'your post')}"`}
+                            </p>
+                            <p class="text-[10px] text-gray-500 mt-1">${timeAgo(n.createdAt)}</p>
+                        </div>
+                    `).join('');
+                } else {
+                    container.innerHTML = '<div class="p-4 text-center text-sm text-gray-500">No new activity.</div>';
+                }
+            }, (e) => console.log("Notif error (index likely needed)", e));
+        }
+
+        window.toggleNotif = () => {
+            const dd = document.getElementById('notif-dropdown');
+            dd.classList.toggle('hidden');
+            if(!dd.classList.contains('hidden')) {
+                document.getElementById('notif-badge').classList.add('hidden'); // Clear badge
+            }
+        };
+
+        window.handleNotifClick = (type, cId, cType, actorId) => {
+             document.getElementById('notif-dropdown').classList.add('hidden');
+             if(type === 'follow') window.navigateTo('profile', actorId);
+             else if (type === 'comment' && cId && cType) {
+                 if(cType === 'videos') window.navigateTo('watch', cId);
+                 else if (cType === 'posts') window.navigateTo('read', cId);
+             }
+        }
+
+        // --- BOILERPLATE & HELPERS ---
         window.handleAuth = async (isLogin) => {
             const email = document.getElementById('auth-email').value;
             const pass = document.getElementById('auth-pass').value;
-            const name = document.getElementById('auth-name').value;
             try {
-                if(isLogin) {
-                    await signInWithEmailAndPassword(auth, email, pass);
-                } else {
-                    if(!name) throw new Error("Username required for signup");
-                    // 1. Create Auth User
+                if(isLogin) await signInWithEmailAndPassword(auth, email, pass);
+                else {
                     const cred = await createUserWithEmailAndPassword(auth, email, pass);
-                    // 2. Create Profile Doc
-                    const username = name.toLowerCase().replace(/\s/g, '_');
-                    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'users', cred.user.uid), {
-                        displayName: name,
-                        username: username,
-                        createdAt: serverTimestamp()
-                    });
-                    await updateProfile(cred.user, { displayName: name });
+                    await updateProfile(cred.user, { displayName: document.getElementById('auth-name').value });
                 }
                 window.navigateTo('home');
             } catch(e) { alert(e.message); }
         };
-        
         window.logout = () => { signOut(auth); window.navigateTo('home'); };
-
+        window.toggleSidebar = (f) => {
+            const sb = document.getElementById('sidebar'), ov = document.getElementById('sidebar-overlay');
+            if(f!==undefined) { f ? (sb.classList.remove('-translate-x-full'), ov.classList.remove('hidden')) : (sb.classList.add('-translate-x-full'), ov.classList.add('hidden')); }
+            else { sb.classList.toggle('-translate-x-full'); ov.classList.toggle('hidden'); }
+        };
         function updateUI() {
-            const container = document.getElementById('sidebar-user');
             if(currentUser) {
-                container.innerHTML = `
-                    <div onclick="window.navigateTo('profile')" class="flex items-center gap-3 px-2 mb-4 cursor-pointer hover:bg-gray-800 p-2 rounded transition-colors">
-                        <div class="w-8 h-8 rounded-full bg-red-600 text-white flex items-center justify-center font-bold overflow-hidden">
-                             ${currentUserProfile && currentUserProfile.photoBase64 ? `<img src="${currentUserProfile.photoBase64}" class="w-full h-full object-cover">` : (currentUser.displayName||'U')[0].toUpperCase()}
-                        </div>
-                        <div class="overflow-hidden">
-                            <p class="text-sm font-medium text-white truncate">${currentUser.displayName}</p>
-                            <p class="text-[10px] text-gray-400">View Channel</p>
-                        </div>
-                    </div>
-                    <button onclick="window.logout()" class="w-full text-left text-xs text-gray-400 hover:text-white px-2">Sign Out</button>
-                `;
+                document.getElementById('sidebar-user').innerHTML = `<div onclick="window.navigateTo('profile')" class="flex items-center gap-3 px-2 mb-4 cursor-pointer hover:bg-gray-800 p-2 rounded transition-colors"><div class="w-8 h-8 rounded-full bg-red-600 text-white flex items-center justify-center font-bold overflow-hidden">${currentUserProfile?.photoBase64 ? `<img src="${currentUserProfile.photoBase64}" class="w-full h-full object-cover">` : (currentUser.displayName||'U')[0].toUpperCase()}</div><div class="overflow-hidden"><p class="text-sm font-medium text-white truncate">${currentUser.displayName}</p><p class="text-[10px] text-gray-400">View Channel</p></div></div><button onclick="window.logout()" class="w-full text-left text-xs text-gray-400 hover:text-white px-2">Sign Out</button>`;
             } else {
-                container.innerHTML = `<button onclick="window.navigateTo('auth')" class="w-full bg-red-600 hover:bg-red-700 text-white py-2 rounded text-sm font-bold">Sign In</button>`;
+                document.getElementById('sidebar-user').innerHTML = `<button onclick="window.navigateTo('auth')" class="w-full bg-red-600 hover:bg-red-700 text-white py-2 rounded text-sm font-bold">Sign In</button>`;
             }
         }
+        window.toggleMobileSearch = () => { const b = document.getElementById('mobile-search-bar'); b.classList.toggle('hidden'); if(!b.classList.contains('hidden')) document.getElementById('mobile-search-input').focus(); };
+        window.toggleLike = async (c,id) => { if(!currentUser) return alert("Login needed"); await updateDoc(doc(db,'artifacts',appId,'public','data',c,id),{likes:increment(1)}); const el=document.getElementById(currentView==='watch'?'watch-like-count':(currentView==='read'?'read-like-count':null)); if(el) el.innerText=parseInt(el.innerText)+1; };
         
-        // --- Interactions ---
-        window.toggleLike = async (col, id) => {
-            if(!currentUser) return alert("Login to like");
-            await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', col, id), { likes: increment(1) });
-            const el = document.getElementById(currentView === 'watch' ? 'watch-like-count' : (currentView === 'read' ? 'read-like-count' : null));
-            if(el) el.textContent = parseInt(el.textContent) + 1;
-        };
-
-        window.postComment = async (e) => {
-            e.preventDefault();
-            if(!currentUser) return alert("Login to comment.");
-            const input = document.getElementById(currentView === 'watch' ? 'watch-comment-input' : 'read-comment-input');
-            const text = input.value.trim();
-            if(!text) return;
-            await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'comments'), {
-                text, targetId: viewedItem.id, 
-                authorId: currentUser.uid, authorName: currentUser.displayName,
-                createdAt: serverTimestamp()
+        async function loadComments(targetId) {
+            const list = document.getElementById(currentView === 'watch' ? 'watch-comments' : 'read-comments');
+            list.innerHTML = 'Loading...';
+            // Simple query fallback for stability without index
+            const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'comments'), where("targetId", "==", targetId));
+            onSnapshot(q, (snap) => {
+                const comms = snap.docs.map(d => d.data()).sort((a,b)=>(b.createdAt?.seconds||0)-(a.createdAt?.seconds||0));
+                list.innerHTML = comms.length ? comms.map(c => `<div class="flex gap-3 mb-4"><div class="w-8 h-8 rounded-full bg-gray-700 flex-shrink-0 flex items-center justify-center text-xs font-bold">${(c.authorName||'U')[0].toUpperCase()}</div><div><div class="flex items-center gap-2"><span class="text-xs font-bold text-white">${escapeHtml(c.authorName)}</span><span class="text-[10px] text-gray-500">${timeAgo(c.createdAt)}</span></div><p class="text-sm text-gray-300 mt-1">${escapeHtml(c.text)}</p></div></div>`).join('') : 'No comments yet.';
             });
-            input.value = '';
-            // addNotification(viewedItem.authorId, 'comment', viewedItem.title, viewedItem.id, viewedItem.type);
-        };
-        // (Other interaction functions same as 3.2, omitted for space but critical for function)
-        // Re-adding essential interaction functions to ensure full file functionality
-        window.toggleMobileSearch = () => {
-            const bar = document.getElementById('mobile-search-bar');
-            bar.classList.toggle('hidden');
-            if(!bar.classList.contains('hidden')) document.getElementById('mobile-search-input').focus();
-        };
-        window.toggleSidebar = (force) => {
-            const sb = document.getElementById('sidebar');
-            const ov = document.getElementById('sidebar-overlay');
-            if(force !== undefined) {
-                if(force) { sb.classList.remove('-translate-x-full'); ov.classList.remove('hidden'); }
-                else { sb.classList.add('-translate-x-full'); ov.classList.add('hidden'); }
-            } else {
-                sb.classList.toggle('-translate-x-full');
-                ov.classList.toggle('hidden');
-            }
-        };
-        function timeAgo(t) {
-            if(!t) return 'Just now';
-            const s = Math.floor((new Date() - t.toDate())/1000);
-            if(s>31536000) return Math.floor(s/31536000)+'y ago';
-            if(s>2592000) return Math.floor(s/2592000)+'mo ago';
-            if(s>86400) return Math.floor(s/86400)+'d ago';
-            if(s>3600) return Math.floor(s/3600)+'h ago';
-            if(s>60) return Math.floor(s/60)+'m ago';
-            return 'Just now';
         }
-        function escapeHtml(t) { return t ? t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;") : ''; }
-
-        // Load Notifications (Simplified)
-        async function loadNotifications() {
-             // Logic same as 3.2
-             const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'notifications'), where("targetUserId", "==", currentUser.uid), limit(20));
-             onSnapshot(q, (snap) => {
-                 if(!snap.empty) document.getElementById('notif-badge')?.classList.remove('hidden');
-             });
-        }
-        window.toggleNotif = () => document.getElementById('notif-dropdown').classList.toggle('hidden');
-        window.switchStudioTab = (t) => {
-            ['video','article','community'].forEach(x => { document.getElementById(`studio-form-${x}`).classList.add('hidden'); document.getElementById(`studio-tab-${x}`).classList.replace('text-white','text-gray-400'); document.getElementById(`studio-tab-${x}`).classList.remove('border-red-600'); });
-            document.getElementById(`studio-form-${t}`).classList.remove('hidden'); document.getElementById(`studio-tab-${t}`).classList.replace('text-gray-400','text-white'); document.getElementById(`studio-tab-${t}`).classList.add('border-red-600');
-        }
+        window.postComment = async (e) => { e.preventDefault(); if(!currentUser) return alert("Login needed"); const inp = document.getElementById(currentView==='watch'?'watch-comment-input':'read-comment-input'); if(!inp.value.trim()) return; await addDoc(collection(db,'artifacts',appId,'public','data','comments'),{text:inp.value, targetId:viewedItem.id, authorId:currentUser.uid, authorName:currentUser.displayName, createdAt:serverTimestamp()}); inp.value=''; };
+        window.postInlineComment = async (e,id) => { e.preventDefault(); if(!currentUser) return alert("Login needed"); const inp=e.target.querySelector('input'); if(!inp.value.trim()) return; await addDoc(collection(db,'artifacts',appId,'public','data','comments'),{text:inp.value, targetId:id, authorId:currentUser.uid, authorName:currentUser.displayName, createdAt:serverTimestamp()}); inp.value=''; window.toggleComments('comm-'+id,true); };
+        window.toggleComments = async (divId, force) => { const d=document.getElementById(divId); if(!d.classList.contains('hidden')&&!force) d.classList.add('hidden'); else { d.classList.remove('hidden'); const pid=divId.replace('comm-',''); const list=document.getElementById('comm-list-'+pid); const q=query(collection(db,'artifacts',appId,'public','data','comments'),where('targetId','==',pid)); onSnapshot(q,(s)=>{ const comms=s.docs.map(x=>x.data()).sort((a,b)=>(a.createdAt?.seconds||0)-(b.createdAt?.seconds||0)); list.innerHTML=comms.map(c=>`<p class="text-xs text-gray-300"><b>${escapeHtml(c.authorName)}</b>: ${escapeHtml(c.text)}</p>`).join(''); }); } };
+        function timeAgo(t) { if(!t) return 'Just now'; const s=Math.floor((new Date()-t.toDate())/1000); if(s>31536000)return Math.floor(s/31536000)+'y'; if(s>86400)return Math.floor(s/86400)+'d'; if(s>3600)return Math.floor(s/3600)+'h'; if(s>60)return Math.floor(s/60)+'m'; return 'Just now'; }
+        function escapeHtml(t) { return t?t.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"): ''; }
 
         window.onload = () => window.navigateTo('home');
     </script>
 </head>
 <body class="bg-gray-950 text-gray-100 font-sans overflow-x-hidden">
 
-    <!-- EDIT PROFILE MODAL (NEW) -->
+    <!-- EDIT PROFILE MODAL -->
     <div id="edit-modal" class="fixed inset-0 bg-black/80 z-[60] hidden flex items-center justify-center p-4">
         <div class="bg-gray-900 border border-gray-800 rounded-xl w-full max-w-md p-6 shadow-2xl">
             <h2 class="text-xl font-bold text-white mb-6">Customize Channel</h2>
             <form onsubmit="window.saveProfileChanges(event)">
-                <!-- Avatar Upload -->
                 <div class="flex justify-center mb-6">
                     <div class="relative group cursor-pointer" onclick="document.getElementById('edit-img-input').click()">
                         <div class="w-24 h-24 rounded-full bg-gray-800 border-2 border-gray-700 flex items-center justify-center overflow-hidden">
@@ -685,33 +794,16 @@
                                 <img id="edit-preview" class="w-full h-full object-cover">
                             </div>
                         </div>
-                        <div class="absolute inset-0 bg-black/50 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
-                            <span class="text-xs font-medium">Change</span>
-                        </div>
+                        <div class="absolute inset-0 bg-black/50 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"><span class="text-xs font-medium">Change</span></div>
                     </div>
                     <input type="file" id="edit-img-input" class="hidden" accept="image/*" onchange="window.previewImage(this)">
                 </div>
-
                 <div class="space-y-4">
-                    <div>
-                        <label class="text-xs text-gray-500 uppercase font-bold">Channel Name</label>
-                        <input id="edit-name" type="text" class="w-full bg-black border border-gray-800 rounded p-2 text-white mt-1 focus:border-red-600 outline-none" required>
-                    </div>
-                    <div>
-                        <label class="text-xs text-gray-500 uppercase font-bold">Handle (@)</label>
-                        <input id="edit-username" type="text" class="w-full bg-black border border-gray-800 rounded p-2 text-white mt-1 focus:border-red-600 outline-none" required>
-                        <p class="text-[10px] text-gray-600 mt-1">Unique identifier. Letters and numbers only.</p>
-                    </div>
-                    <div>
-                        <label class="text-xs text-gray-500 uppercase font-bold">Bio</label>
-                        <textarea id="edit-bio" rows="3" class="w-full bg-black border border-gray-800 rounded p-2 text-white mt-1 focus:border-red-600 outline-none"></textarea>
-                    </div>
+                    <div><label class="text-xs text-gray-500 uppercase font-bold">Channel Name</label><input id="edit-name" type="text" class="w-full bg-black border border-gray-800 rounded p-2 text-white mt-1 focus:border-red-600 outline-none" required></div>
+                    <div><label class="text-xs text-gray-500 uppercase font-bold">Handle (@)</label><input id="edit-username" type="text" class="w-full bg-black border border-gray-800 rounded p-2 text-white mt-1 focus:border-red-600 outline-none" required><p class="text-[10px] text-gray-600 mt-1">Unique identifier. Letters and numbers only.</p></div>
+                    <div><label class="text-xs text-gray-500 uppercase font-bold">Bio</label><textarea id="edit-bio" rows="3" class="w-full bg-black border border-gray-800 rounded p-2 text-white mt-1 focus:border-red-600 outline-none"></textarea></div>
                 </div>
-
-                <div class="flex gap-3 mt-8">
-                    <button type="button" onclick="window.closeEditModal()" class="flex-1 py-2 text-gray-400 hover:text-white">Cancel</button>
-                    <button type="submit" id="save-profile-btn" class="flex-1 py-2 bg-red-600 hover:bg-red-700 text-white rounded font-bold">Save</button>
-                </div>
+                <div class="flex gap-3 mt-8"><button type="button" onclick="window.closeEditModal()" class="flex-1 py-2 text-gray-400 hover:text-white">Cancel</button><button type="submit" id="save-profile-btn" class="flex-1 py-2 bg-red-600 hover:bg-red-700 text-white rounded font-bold">Save</button></div>
             </form>
         </div>
     </div>
@@ -752,8 +844,7 @@
             <div class="flex items-center gap-4 relative">
                 <button onclick="window.toggleMobileSearch()" class="md:hidden text-white"><i data-lucide="search" class="w-5 h-5"></i></button>
                 <div class="relative">
-                    <button onclick="window.toggleNotif()" class="text-gray-400 hover:text-white"><i data-lucide="bell" class="w-5 h-5"></i></button>
-                    <div id="notif-badge" class="hidden absolute -top-1 -right-1 w-2.5 h-2.5 bg-red-600 rounded-full border border-gray-950"></div>
+                    <button onclick="window.toggleNotif()" class="text-gray-400 hover:text-white relative"><i data-lucide="bell" class="w-5 h-5"></i><div id="notif-badge" class="hidden absolute -top-1 -right-1 w-2.5 h-2.5 bg-red-600 rounded-full border border-gray-950"></div></button>
                     <div id="notif-dropdown" class="hidden absolute right-0 top-10 w-72 bg-gray-900 border border-gray-800 rounded-xl shadow-xl overflow-hidden z-50">
                         <div class="px-4 py-2 bg-gray-800 border-b border-gray-700 font-bold text-sm">Activity</div>
                         <div id="notif-list" class="max-h-64 overflow-y-auto"></div>
@@ -770,7 +861,20 @@
         </div>
 
         <main class="flex-grow p-4 lg:p-6 w-full max-w-7xl mx-auto">
-            <section id="view-feed" class="view-section"><h2 id="feed-title" class="text-xl font-bold mb-6 flex items-center"></h2><div id="feed-grid"></div></section>
+            <section id="view-feed" class="view-section">
+                <div class="flex justify-between items-center mb-6">
+                    <h2 id="feed-title" class="text-xl font-bold flex items-center"></h2>
+                    <div id="feed-sort-container" class="hidden">
+                        <select onchange="window.setGlobalSort(this.value)" class="bg-gray-900 text-sm text-gray-400 border-none outline-none focus:ring-0 cursor-pointer">
+                            <option value="latest">Latest</option>
+                            <option value="popular">Most Viewed</option>
+                            <option value="trending">Trending</option>
+                            <option value="oldest">Oldest</option>
+                        </select>
+                    </div>
+                </div>
+                <div id="feed-grid"></div>
+            </section>
             
             <section id="view-search" class="view-section hidden max-w-4xl mx-auto">
                 <div class="flex gap-2 mb-6 overflow-x-auto pb-2 scrollbar-hide">
@@ -791,7 +895,10 @@
                         <h1 id="watch-title" class="text-xl font-bold text-white mb-2"></h1>
                         <div class="flex items-center justify-between border-b border-gray-800 pb-4 mb-4">
                             <div class="flex items-center gap-3"><h3 id="watch-author" class="font-medium text-white text-sm cursor-pointer hover:underline"></h3></div>
-                            <button id="watch-like-btn" class="flex items-center gap-2 bg-gray-800 hover:bg-gray-700 px-4 py-2 rounded-full text-sm font-medium"><i data-lucide="thumbs-up" class="w-4 h-4"></i> <span id="watch-like-count">0</span></button>
+                            <div class="flex gap-2 items-center">
+                                <button id="watch-like-btn" class="flex items-center gap-2 bg-gray-800 hover:bg-gray-700 px-4 py-2 rounded-full text-sm font-medium"><i data-lucide="thumbs-up" class="w-4 h-4"></i> <span id="watch-like-count">0</span></button>
+                                <div id="watch-owner-actions"></div>
+                            </div>
                         </div>
                         <div class="bg-gray-900 p-4 rounded-xl text-sm text-gray-300 whitespace-pre-wrap mb-8" id="watch-desc"></div>
                         <h3 class="font-bold text-white mb-4">Comments</h3>
@@ -817,8 +924,22 @@
                     </div>
                     <div class="p-6">
                         <div id="studio-form-video">
-                            <input id="inp-vid-title" class="w-full bg-gray-950 border border-gray-800 rounded p-3 mb-3 text-white" placeholder="Video Title" autocomplete="off">
-                            <input id="inp-vid-url" class="w-full bg-gray-950 border border-gray-800 rounded p-3 mb-3 text-white" placeholder="YouTube Link (e.g. https://youtu.be/...)" autocomplete="off">
+                            <input id="inp-vid-title" class="w-full bg-gray-950 border border-gray-800 rounded p-3 mb-4 text-white" placeholder="Video Title" autocomplete="off">
+                            
+                            <div class="flex gap-4 mb-3">
+                                <label class="flex items-center gap-2 cursor-pointer">
+                                    <input type="radio" name="vid-mode" value="link" checked onchange="window.toggleVideoInput('link')" class="accent-red-600">
+                                    <span class="text-sm text-gray-300">YouTube Link</span>
+                                </label>
+                                <label class="flex items-center gap-2 cursor-pointer">
+                                    <input type="radio" name="vid-mode" value="embed" onchange="window.toggleVideoInput('embed')" class="accent-red-600">
+                                    <span class="text-sm text-gray-300">Embed Code</span>
+                                </label>
+                            </div>
+
+                            <input id="inp-vid-url" class="w-full bg-gray-950 border border-gray-800 rounded p-3 mb-3 text-white" placeholder="https://youtube.com/watch?v=..." autocomplete="off">
+                            <textarea id="inp-vid-embed" class="w-full bg-gray-950 border border-gray-800 rounded p-3 mb-3 text-white font-mono text-sm hidden" rows="3" placeholder="<iframe...>" autocomplete="off"></textarea>
+                            
                             <textarea id="inp-vid-desc" class="w-full bg-gray-950 border border-gray-800 rounded p-3 mb-4 text-white" rows="3" placeholder="Description" autocomplete="off"></textarea>
                             <button id="btn-pub-video" onclick="window.publish('video')" class="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-3 rounded">Publish Video</button>
                         </div>
