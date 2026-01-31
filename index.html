@@ -4,8 +4,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Uncensored Truth (UT)</title>
-    
-    <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = {
@@ -13,7 +11,7 @@
             theme: {
                 extend: {
                     colors: {
-                        brand: { 600: '#DC2626', 700: '#B91C1C', 900: '#7F1D1D' },
+                        brand: { 600: '#DC2626', 700: '#B91C1C', 900: '#7F1D1D' }, // Red
                         surface: { 50: '#f9fafb', 800: '#1f2937', 900: '#111827', 950: '#030712' }
                     }
                 }
@@ -21,25 +19,20 @@
         }
     </script>
     <style>
-        /* Custom Scrollbar for a premium feel */
         ::-webkit-scrollbar { width: 8px; }
-        ::-webkit-scrollbar-track { background: #111827; }
+        ::-webkit-scrollbar-track { background: #030712; }
         ::-webkit-scrollbar-thumb { background: #374151; border-radius: 4px; }
-        ::-webkit-scrollbar-thumb:hover { background: #4b5563; }
         .line-clamp-2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
         .sidebar-active { background-color: #1f2937; border-left: 3px solid #DC2626; color: white; }
     </style>
-
-    <!-- Icons -->
     <script src="https://unpkg.com/lucide@latest"></script>
 
     <!-- Firebase SDKs -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, updateProfile } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, collection, addDoc, onSnapshot, doc, deleteDoc, updateDoc, increment, serverTimestamp, query, where, getDocs, setDoc, getDoc, orderBy } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, collection, addDoc, onSnapshot, doc, deleteDoc, updateDoc, increment, serverTimestamp, query, where, getDocs, setDoc, getDoc, orderBy, limit } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        // --- FIREBASE CONFIGURATION ---
         const firebaseConfig = {
             apiKey: "AIzaSyAxBrWfKcq0GoK21-BeocsEbDdf24Q5mi8",
             authDomain: "uncensored-truth.firebaseapp.com",
@@ -55,623 +48,796 @@
         const db = getFirestore(app);
         const appId = 'uncensored-truth-live';
 
-        // --- GLOBAL STATE ---
+        // --- STATE ---
         let currentUser = null;
-        let videos = [];
-        let articles = []; // Formerly 'posts'
-        let communityPosts = []; // New 'community'
+        let allContent = { videos: [], posts: [], community: [] };
+        let currentComments = [];
+        let searchQuery = "";
         
-        // --- AUTH & INIT ---
+        // --- AUTH ---
         onAuthStateChanged(auth, (user) => {
             currentUser = user;
-            updateAuthUI();
-            if (user) {
-                // Initial data load handled by listeners
-            }
+            updateUI();
+            if(user) loadNotifications();
         });
 
         // --- DATA LISTENERS ---
-        // 1. Videos
-        onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'videos'), (snapshot) => {
-            videos = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })).sort((a,b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
-            refreshCurrentView();
+        // OPTIMIZATION: Added orderBy('createdAt', 'desc') to main feeds.
+        // This relies on single-field indexes which are automatic in Firestore.
+        const collections = ['videos', 'posts', 'community'];
+        collections.forEach(col => {
+            const q = query(
+                collection(db, 'artifacts', appId, 'public', 'data', col), 
+                orderBy('createdAt', 'desc'), 
+                limit(50)
+            );
+            
+            onSnapshot(q, (snap) => {
+                allContent[col] = snap.docs.map(d => ({ id: d.id, type: col, ...d.data() }));
+                refreshView();
+            });
         });
 
-        // 2. Articles (Blog)
-        onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'posts'), (snapshot) => {
-            articles = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })).sort((a,b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
-            refreshCurrentView();
-        });
+        // --- NAVIGATION ---
+        let currentView = 'home';
+        let viewedItem = null; // For watch/read views
+        let viewedProfileId = null; // For profile view
 
-        // 3. Community (New Social Feed)
-        onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'community'), (snapshot) => {
-            communityPosts = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })).sort((a,b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
-            refreshCurrentView();
-        });
-
-        // --- NAVIGATION & ROUTING ---
-        let currentView = 'home'; // home, articles, community, studio, profile, watch, read
-        let selectedCategory = 'all';
-
-        window.navigateTo = (view, params = null) => {
+        window.navigateTo = async (view, param = null) => {
             currentView = view;
             
-            // Sidebar Active State
-            document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('sidebar-active', 'text-gray-100'));
-            document.querySelectorAll('.nav-item').forEach(el => el.classList.add('text-gray-400'));
-            
-            const activeNav = document.getElementById(`nav-${view}`);
-            if(activeNav) {
-                activeNav.classList.add('sidebar-active');
-                activeNav.classList.remove('text-gray-400');
-            }
+            // Sidebar UI
+            document.querySelectorAll('.nav-item').forEach(el => {
+                el.classList.remove('sidebar-active', 'text-white');
+                el.classList.add('text-gray-400');
+            });
+            const active = document.getElementById(`nav-${view}`);
+            if(active) { active.classList.add('sidebar-active', 'text-white'); active.classList.remove('text-gray-400'); }
 
-            // Hide all sections
+            // Content Sections
             document.querySelectorAll('.view-section').forEach(el => el.classList.add('hidden'));
+            
+            // Mobile Search Reset
+            document.getElementById('mobile-search-bar').classList.add('hidden');
 
-            // Show target
-            if (view === 'home') {
+            if(view === 'home' || view === 'articles' || view === 'community') {
                 document.getElementById('view-feed').classList.remove('hidden');
-                document.getElementById('feed-title').innerHTML = '<i data-lucide="play-circle" class="inline mr-2 text-red-600"></i>Recommended Videos';
-                renderVideos(videos);
-            } else if (view === 'articles') {
-                document.getElementById('view-feed').classList.remove('hidden');
-                document.getElementById('feed-title').innerHTML = '<i data-lucide="file-text" class="inline mr-2 text-blue-500"></i>Latest Articles';
-                renderArticles(articles);
-            } else if (view === 'community') {
-                document.getElementById('view-feed').classList.remove('hidden');
-                document.getElementById('feed-title').innerHTML = '<i data-lucide="users" class="inline mr-2 text-green-500"></i>Community Buzz';
-                renderCommunity(communityPosts);
-            } else if (view === 'studio') {
-                if (!currentUser) return window.navigateTo('auth');
+                refreshView();
+            } 
+            else if (view === 'studio') {
+                if(!currentUser) return window.navigateTo('auth');
                 document.getElementById('view-studio').classList.remove('hidden');
-            } else if (view === 'auth') {
+            }
+            else if (view === 'auth') {
                 document.getElementById('view-auth').classList.remove('hidden');
-            } else if (view === 'watch') {
-                document.getElementById('view-watch').classList.remove('hidden');
-                loadVideoPlayer(params);
-            } else if (view === 'read') {
-                document.getElementById('view-read').classList.remove('hidden');
-                loadArticleReader(params);
-            } else if (view === 'profile') {
+            }
+            else if (view === 'profile') {
+                viewedProfileId = param || (currentUser ? currentUser.uid : null);
+                if(!viewedProfileId) return window.navigateTo('auth');
                 document.getElementById('view-profile').classList.remove('hidden');
-                renderProfile();
+                renderProfile(viewedProfileId);
+            }
+            else if (view === 'watch') {
+                viewedItem = allContent.videos.find(v => v.id === param);
+                if(viewedItem) {
+                    document.getElementById('view-watch').classList.remove('hidden');
+                    loadVideoPlayer(viewedItem);
+                    loadComments(param);
+                }
+            }
+            else if (view === 'read') {
+                viewedItem = allContent.posts.find(p => p.id === param);
+                if(viewedItem) {
+                    document.getElementById('view-read').classList.remove('hidden');
+                    loadArticleReader(viewedItem);
+                    loadComments(param);
+                }
             }
 
             lucide.createIcons();
-            // Close mobile sidebar if open
             if(window.innerWidth < 768) toggleSidebar(false);
         };
 
-        function refreshCurrentView() {
-            if (currentView === 'home') renderVideos(videos);
-            if (currentView === 'articles') renderArticles(articles);
-            if (currentView === 'community') renderCommunity(communityPosts);
-            if (currentView === 'profile') renderProfile();
+        function refreshView() {
+            const grid = document.getElementById('feed-grid');
+            const title = document.getElementById('feed-title');
+            let data = [];
+            
+            if(currentView === 'home') {
+                title.innerHTML = '<i data-lucide="play-circle" class="inline mr-2 text-red-600"></i>Videos';
+                data = filterData(allContent.videos);
+                renderVideos(data, grid);
+            } else if (currentView === 'articles') {
+                title.innerHTML = '<i data-lucide="file-text" class="inline mr-2 text-blue-500"></i>Articles';
+                data = filterData(allContent.posts);
+                renderArticles(data, grid);
+            } else if (currentView === 'community') {
+                title.innerHTML = '<i data-lucide="users" class="inline mr-2 text-green-500"></i>Community Buzz';
+                data = filterData(allContent.community);
+                renderCommunity(data, grid);
+            }
+        }
+
+        function filterData(list) {
+            if(!searchQuery) return list;
+            const q = searchQuery.toLowerCase();
+            return list.filter(i => 
+                (i.title && i.title.toLowerCase().includes(q)) || 
+                (i.content && i.content.toLowerCase().includes(q)) ||
+                (i.description && i.description.toLowerCase().includes(q)) ||
+                (i.authorName && i.authorName.toLowerCase().includes(q))
+            );
         }
 
         // --- RENDERERS ---
-        
-        // 1. Videos (YouTube Style)
-        function renderVideos(list) {
-            const grid = document.getElementById('feed-grid');
-            grid.className = "grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4";
-            
-            if(list.length === 0) { grid.innerHTML = `<div class="col-span-full text-center py-20 text-gray-500">No videos yet. Be the first to upload!</div>`; return;}
+        function getThumbnail(url) {
+            const ytMatch = url.match(/(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/);
+            if(ytMatch) return `https://img.youtube.com/vi/${ytMatch[1]}/mqdefault.jpg`;
+            return null;
+        }
 
-            grid.innerHTML = list.map(v => `
+        function renderVideos(list, container) {
+            container.className = "grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4";
+            container.innerHTML = list.length ? list.map(v => `
                 <div onclick="window.navigateTo('watch', '${v.id}')" class="group cursor-pointer">
-                    <div class="relative aspect-video bg-gray-900 rounded-xl overflow-hidden mb-3 border border-gray-800 group-hover:border-gray-600 transition-all">
-                        <div class="absolute inset-0 flex items-center justify-center">
-                            <i data-lucide="play" class="w-12 h-12 text-gray-700 group-hover:text-red-600 transition-colors"></i>
-                        </div>
-                        <!-- We could extract thumbnail from YT link here but keeping simple for now -->
-                        <div class="absolute bottom-2 right-2 bg-black/80 text-white text-xs px-1 rounded">Video</div>
+                    <div class="relative aspect-video bg-gray-900 rounded-xl overflow-hidden mb-3 border border-gray-800">
+                        ${getThumbnail(v.originalLink || '') ? 
+                            `<img src="${getThumbnail(v.originalLink)}" class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300">` : 
+                            `<div class="w-full h-full flex items-center justify-center text-gray-700"><i data-lucide="play" class="w-12 h-12"></i></div>`
+                        }
+                        <div class="absolute bottom-2 right-2 bg-black/80 text-white text-xs px-1.5 py-0.5 rounded font-mono">Video</div>
                     </div>
                     <div class="flex gap-3">
-                        <div class="flex-shrink-0">
-                            <div class="w-9 h-9 rounded-full bg-gray-700 flex items-center justify-center text-sm font-bold text-white">
-                                ${(v.authorName || 'U')[0].toUpperCase()}
+                        <div onclick="event.stopPropagation(); window.navigateTo('profile', '${v.authorId}')" class="flex-shrink-0 cursor-pointer hover:opacity-80">
+                            <div class="w-9 h-9 rounded-full bg-gray-800 flex items-center justify-center text-sm font-bold text-white border border-gray-700">
+                                ${(v.authorName||'U')[0].toUpperCase()}
                             </div>
                         </div>
-                        <div class="flex-1">
+                        <div class="flex-1 min-w-0">
                             <h3 class="text-white font-semibold text-sm line-clamp-2 leading-tight group-hover:text-red-500 transition-colors">${escapeHtml(v.title)}</h3>
                             <div class="text-gray-400 text-xs mt-1">
-                                <p>${escapeHtml(v.authorName || 'Anonymous')}</p>
-                                <p class="mt-0.5">${v.views || 0} views • ${timeAgo(v.createdAt)}</p>
+                                <p class="hover:text-gray-300" onclick="event.stopPropagation(); window.navigateTo('profile', '${v.authorId}')">${escapeHtml(v.authorName)}</p>
+                                <p class="mt-0.5">${v.views||0} views • ${timeAgo(v.createdAt)}</p>
                             </div>
                         </div>
                     </div>
                 </div>
-            `).join('');
+            `).join('') : '<div class="col-span-full text-center text-gray-500 py-10">No videos found.</div>';
             lucide.createIcons();
         }
 
-        // 2. Articles (Medium/Card Style)
-        function renderArticles(list) {
-            const grid = document.getElementById('feed-grid');
-            grid.className = "grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6";
-
-            if(list.length === 0) { grid.innerHTML = `<div class="col-span-full text-center py-20 text-gray-500">No articles yet.</div>`; return;}
-
-            grid.innerHTML = list.map(a => `
-                <div onclick="window.navigateTo('read', '${a.id}')" class="bg-gray-900 border border-gray-800 rounded-xl p-6 cursor-pointer hover:border-blue-900/50 hover:bg-gray-800 transition-all flex flex-col h-full">
+        function renderArticles(list, container) {
+            container.className = "grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6";
+            container.innerHTML = list.length ? list.map(a => `
+                <div onclick="window.navigateTo('read', '${a.id}')" class="bg-gray-900 border border-gray-800 rounded-xl p-6 cursor-pointer hover:border-blue-900/50 hover:bg-gray-800 transition-all flex flex-col h-full group">
                     <div class="flex items-center gap-2 mb-3 text-xs text-gray-400">
-                        <span class="bg-blue-900/30 text-blue-400 px-2 py-0.5 rounded">Article</span>
+                        <span class="bg-blue-900/20 text-blue-400 px-2 py-0.5 rounded">Blog</span>
                         <span>• ${timeAgo(a.createdAt)}</span>
                     </div>
-                    <h3 class="text-xl font-bold text-white mb-2 line-clamp-2">${escapeHtml(a.title)}</h3>
+                    <h3 class="text-lg font-bold text-white mb-2 line-clamp-2 group-hover:text-blue-400 transition-colors">${escapeHtml(a.title)}</h3>
                     <p class="text-gray-400 text-sm line-clamp-3 mb-4 flex-grow">${escapeHtml(a.content)}</p>
                     <div class="flex items-center justify-between pt-4 border-t border-gray-800 mt-auto">
-                        <div class="flex items-center gap-2">
+                        <div class="flex items-center gap-2" onclick="event.stopPropagation(); window.navigateTo('profile', '${a.authorId}')">
                             <div class="w-6 h-6 rounded-full bg-gray-700 flex items-center justify-center text-[10px] text-white">
-                                ${(a.authorName || 'U')[0].toUpperCase()}
+                                ${(a.authorName||'U')[0].toUpperCase()}
                             </div>
-                            <span class="text-xs text-gray-300">${escapeHtml(a.authorName || 'User')}</span>
-                        </div>
-                        <div class="flex items-center gap-3 text-xs text-gray-500">
-                            <span><i data-lucide="eye" class="w-3 h-3 inline"></i> ${a.views||0}</span>
-                            <span><i data-lucide="thumbs-up" class="w-3 h-3 inline"></i> ${a.likes||0}</span>
+                            <span class="text-xs text-gray-300 hover:text-white">${escapeHtml(a.authorName)}</span>
                         </div>
                     </div>
                 </div>
-            `).join('');
+            `).join('') : '<div class="col-span-full text-center text-gray-500 py-10">No articles found.</div>';
             lucide.createIcons();
         }
 
-        // 3. Community (Twitter/Instagram Style)
-        function renderCommunity(list) {
-            const grid = document.getElementById('feed-grid');
-            grid.className = "max-w-2xl mx-auto space-y-6"; // Single column for social feed
-
-            if(list.length === 0) { grid.innerHTML = `<div class="text-center py-20 text-gray-500">No buzz yet. Start the conversation!</div>`; return;}
-
-            grid.innerHTML = list.map(p => `
+        function renderCommunity(list, container) {
+            container.className = "max-w-2xl mx-auto space-y-6";
+            container.innerHTML = list.length ? list.map(p => `
                 <div class="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
                     <div class="p-4 flex items-center gap-3">
-                        <div class="w-10 h-10 rounded-full bg-green-900 flex items-center justify-center font-bold text-green-100">
-                            ${(p.authorName || 'U')[0].toUpperCase()}
+                        <div onclick="window.navigateTo('profile', '${p.authorId}')" class="w-10 h-10 rounded-full bg-green-900/30 border border-green-900 flex items-center justify-center font-bold text-green-100 cursor-pointer">
+                            ${(p.authorName||'U')[0].toUpperCase()}
                         </div>
                         <div>
-                            <h4 class="text-white font-medium text-sm">${escapeHtml(p.authorName || 'Anonymous')}</h4>
+                            <h4 onclick="window.navigateTo('profile', '${p.authorId}')" class="text-white font-medium text-sm cursor-pointer hover:underline">${escapeHtml(p.authorName)}</h4>
                             <p class="text-gray-500 text-xs">${timeAgo(p.createdAt)}</p>
                         </div>
                     </div>
                     <div class="px-4 pb-2">
                         <p class="text-white text-base whitespace-pre-wrap">${escapeHtml(p.content)}</p>
                     </div>
-                    ${p.imageUrl ? `
-                        <div class="mt-2 w-full bg-black">
-                            <img src="${escapeHtml(p.imageUrl)}" class="w-full h-auto max-h-[500px] object-contain" loading="lazy" onerror="this.style.display='none'">
-                        </div>
-                    ` : ''}
-                    <div class="p-3 px-4 flex items-center gap-6 border-t border-gray-800 mt-2">
-                        <button onclick="window.likeItem('community', '${p.id}')" class="flex items-center gap-2 text-gray-400 hover:text-red-500 transition-colors text-sm">
+                    ${p.imageUrl ? `<div class="mt-2 w-full bg-black flex justify-center"><img src="${escapeHtml(p.imageUrl)}" class="max-h-[500px] w-auto object-contain"></div>` : ''}
+                    <div class="p-3 px-4 flex items-center gap-6 border-t border-gray-800 mt-2 bg-gray-900/50">
+                        <button onclick="window.toggleLike('community', '${p.id}')" class="flex items-center gap-2 text-gray-400 hover:text-red-500 transition-colors text-sm">
                             <i data-lucide="heart" class="w-4 h-4"></i> ${p.likes || 0}
                         </button>
-                        <button class="flex items-center gap-2 text-gray-400 hover:text-white transition-colors text-sm">
+                        <button onclick="window.toggleComments('comm-${p.id}')" class="flex items-center gap-2 text-gray-400 hover:text-white transition-colors text-sm">
                             <i data-lucide="message-circle" class="w-4 h-4"></i> Comment
                         </button>
-                        ${currentUser && currentUser.uid === p.authorId ? `
-                            <button onclick="window.deleteItem('community', '${p.id}')" class="ml-auto text-gray-600 hover:text-red-500">
-                                <i data-lucide="trash-2" class="w-4 h-4"></i>
-                            </button>
-                        ` : ''}
+                    </div>
+                    <!-- Inline Comments Section for Community -->
+                    <div id="comm-${p.id}" class="hidden p-4 border-t border-gray-800 bg-black/20">
+                         <div id="comm-list-${p.id}" class="space-y-3 mb-3"></div>
+                         <form onsubmit="window.postInlineComment(event, '${p.id}', 'community')" class="flex gap-2">
+                            <input type="text" placeholder="Reply..." class="flex-1 bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-white">
+                            <button type="submit" class="text-green-500 text-sm font-medium hover:text-green-400">Post</button>
+                         </form>
                     </div>
                 </div>
-            `).join('');
+            `).join('') : '<div class="text-center text-gray-500 py-10">No posts yet.</div>';
             lucide.createIcons();
         }
 
-        // --- UPLOAD HANDLERS ---
-        window.switchStudioTab = (tab) => {
-            ['video', 'article', 'community'].forEach(t => {
-                document.getElementById(`studio-form-${t}`).classList.add('hidden');
-                document.getElementById(`studio-tab-${t}`).classList.remove('bg-gray-700', 'text-white');
-                document.getElementById(`studio-tab-${t}`).classList.add('text-gray-400', 'hover:text-white');
-            });
-            document.getElementById(`studio-form-${tab}`).classList.remove('hidden');
-            document.getElementById(`studio-tab-${tab}`).classList.add('bg-gray-700', 'text-white');
-            document.getElementById(`studio-tab-${tab}`).classList.remove('text-gray-400');
-        };
-
-        window.publishContent = async (type) => {
-            if(!currentUser) return alert("Please sign in.");
-            const btn = document.getElementById(`btn-pub-${type}`);
-            const originalText = btn.innerHTML;
-            btn.disabled = true; btn.innerHTML = '<i data-lucide="loader-2" class="animate-spin mr-2"></i> Publishing...';
+        // --- PROFILE SYSTEM ---
+        async function renderProfile(uid) {
+            const container = document.getElementById('profile-content');
+            container.innerHTML = '<div class="text-center py-10"><i data-lucide="loader-2" class="animate-spin w-8 h-8 text-red-600 mx-auto"></i></div>';
             lucide.createIcons();
 
+            // Fetch User Data (Simulated via Auth + Content aggregation since we don't have a users table yet)
+            // In a real app, we'd query a 'users' collection.
+            
+            // Get Content
+            const myVideos = allContent.videos.filter(x => x.authorId === uid);
+            const myPosts = allContent.posts.filter(x => x.authorId === uid);
+            const myComm = allContent.community.filter(x => x.authorId === uid);
+            const totalViews = myVideos.reduce((a,b)=>a+(b.views||0),0) + myPosts.reduce((a,b)=>a+(b.views||0),0);
+            
+            // Get Follow Status
+            let isFollowing = false;
+            let followerCount = 0;
             try {
-                if (type === 'video') {
-                    const title = document.getElementById('inp-vid-title').value;
-                    const desc = document.getElementById('inp-vid-desc').value;
-                    const rawUrl = document.getElementById('inp-vid-url').value;
-                    if(!title || !rawUrl) throw new Error("Title and URL required");
-                    
-                    // Simple YouTube Regex
-                    const ytMatch = rawUrl.match(/(?:youtube\.com\/.*v=|youtu\.be\/)([^"&?\/\s]{11})/);
-                    let embedCode = rawUrl;
-                    if(ytMatch) embedCode = `<iframe width="100%" height="100%" src="https://www.youtube.com/embed/${ytMatch[1]}" frameborder="0" allowfullscreen></iframe>`;
+                const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'follows'), where("targetId", "==", uid));
+                const snap = await getDocs(q);
+                followerCount = snap.size;
+                if(currentUser) {
+                    const myFollow = snap.docs.find(d => d.data().followerId === currentUser.uid);
+                    if(myFollow) isFollowing = true;
+                }
+            } catch(e){}
 
+            // Get Basic Info (If it's me, use Auth, if not, use data from their latest post)
+            let name = "User";
+            let bio = "No bio available."; // We stored bio in photoURL as a hack in v1
+            
+            if(currentUser && currentUser.uid === uid) {
+                name = currentUser.displayName;
+                bio = currentUser.photoURL || "Welcome to my channel.";
+            } else {
+                const lastItem = [...myVideos, ...myPosts, ...myComm][0];
+                if(lastItem) name = lastItem.authorName;
+            }
+
+            const isMe = currentUser && currentUser.uid === uid;
+
+            document.getElementById('profile-header').innerHTML = `
+                <div class="flex flex-col md:flex-row items-center md:items-end gap-6 mb-8">
+                    <div class="w-32 h-32 rounded-full bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center text-5xl font-bold text-white border-4 border-gray-950 shadow-xl">
+                        ${name[0].toUpperCase()}
+                    </div>
+                    <div class="text-center md:text-left flex-1">
+                        <h1 class="text-3xl font-bold text-white">${escapeHtml(name)}</h1>
+                        <p class="text-gray-400 mt-1">@${name.replace(/\s/g,'').toLowerCase()} • ${followerCount} subscribers</p>
+                        <p class="text-gray-300 mt-3 max-w-lg text-sm">${escapeHtml(bio)}</p>
+                    </div>
+                    <div class="flex gap-3">
+                        ${isMe ? 
+                            `<button onclick="window.editProfile('${name}', '${bio}')" class="px-4 py-2 bg-gray-800 border border-gray-700 rounded-full text-sm hover:bg-gray-700">Customize Channel</button>` :
+                            `<button onclick="window.toggleFollow('${uid}')" class="px-6 py-2 ${isFollowing ? 'bg-gray-800 text-white' : 'bg-white text-black'} font-bold rounded-full text-sm hover:opacity-90 transition-colors">
+                                ${isFollowing ? 'Subscribed' : 'Subscribe'}
+                            </button>`
+                        }
+                    </div>
+                </div>
+                
+                <div class="flex border-b border-gray-800 mb-6 overflow-x-auto">
+                    <button class="px-4 py-3 border-b-2 border-white text-white font-medium text-sm">Videos</button>
+                    <!-- Expandable in future -->
+                </div>
+            `;
+
+            container.innerHTML = '';
+            renderVideos(myVideos, container); // Re-use renderVideos for profile grid
+        }
+
+        window.editProfile = (currentName, currentBio) => {
+            const newName = prompt("Enter new Display Name:", currentName);
+            if(newName) {
+                const newBio = prompt("Enter new Bio:", currentBio === "Welcome to my channel." ? "" : currentBio);
+                updateProfile(currentUser, { displayName: newName, photoURL: newBio }).then(() => {
+                    renderProfile(currentUser.uid); // Refresh
+                });
+            }
+        };
+
+        window.toggleFollow = async (targetId) => {
+            if(!currentUser) return alert("Please login.");
+            if(targetId === currentUser.uid) return alert("Can't subscribe to yourself.");
+            
+            // Check if following
+            const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'follows'), 
+                            where("followerId", "==", currentUser.uid), where("targetId", "==", targetId));
+            const snap = await getDocs(q);
+            
+            if(!snap.empty) {
+                // Unfollow
+                await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'follows', snap.docs[0].id));
+            } else {
+                // Follow
+                await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'follows'), {
+                    followerId: currentUser.uid, targetId: targetId, createdAt: serverTimestamp()
+                });
+                // Create Notification
+                addNotification(targetId, 'follow');
+            }
+            renderProfile(targetId); // Refresh UI
+        };
+
+        // --- COMMENTS & INTERACTIONS ---
+        async function loadComments(targetId) {
+            const list = document.getElementById(currentView === 'watch' ? 'watch-comments' : 'read-comments');
+            list.innerHTML = '<div class="text-gray-500 text-sm">Loading comments...</div>';
+            
+            // PRO FIX: Re-enable Server Side Ordering
+            // Requires Firestore Index: Click the link in console if it fails
+            const q = query(
+                collection(db, 'artifacts', appId, 'public', 'data', 'comments'), 
+                where("targetId", "==", targetId),
+                orderBy("createdAt", "desc"),
+                limit(100)
+            );
+            
+            onSnapshot(q, (snap) => {
+                currentComments = snap.docs.map(d => d.data());
+                
+                list.innerHTML = currentComments.length ? currentComments.map(c => `
+                    <div class="flex gap-3 mb-4">
+                        <div class="w-8 h-8 rounded-full bg-gray-700 flex-shrink-0 flex items-center justify-center text-xs font-bold cursor-pointer" onclick="window.navigateTo('profile', '${c.authorId}')">
+                            ${(c.authorName||'U')[0].toUpperCase()}
+                        </div>
+                        <div>
+                            <div class="flex items-center gap-2">
+                                <span class="text-xs font-bold text-white cursor-pointer hover:underline" onclick="window.navigateTo('profile', '${c.authorId}')">${escapeHtml(c.authorName)}</span>
+                                <span class="text-[10px] text-gray-500">${timeAgo(c.createdAt)}</span>
+                            </div>
+                            <p class="text-sm text-gray-300 mt-1">${escapeHtml(c.text)}</p>
+                        </div>
+                    </div>
+                `).join('') : '<div class="text-sm text-gray-500">No comments yet.</div>';
+            }, (error) => {
+                console.error("Comment Error (Likely missing index):", error);
+                if(error.code === 'failed-precondition') {
+                    list.innerHTML = `<div class="text-red-500 text-xs">Admin Action Required: Check Browser Console to create Database Index.</div>`;
+                }
+            });
+        }
+
+        window.postComment = async (e) => {
+            e.preventDefault();
+            if(!currentUser) return alert("Login to comment.");
+            const input = document.getElementById(currentView === 'watch' ? 'watch-comment-input' : 'read-comment-input');
+            const text = input.value.trim();
+            if(!text) return;
+            
+            await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'comments'), {
+                text, targetId: viewedItem.id, 
+                authorId: currentUser.uid, authorName: currentUser.displayName,
+                createdAt: serverTimestamp()
+            });
+            input.value = '';
+            // Notify Author
+            if(viewedItem.authorId !== currentUser.uid) addNotification(viewedItem.authorId, 'comment', viewedItem.title);
+        };
+
+        window.postInlineComment = async (e, targetId, type) => {
+            e.preventDefault();
+            if(!currentUser) return alert("Login first.");
+            const input = e.target.querySelector('input');
+            const text = input.value.trim();
+            if(!text) return;
+
+            await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'comments'), {
+                text, targetId, authorId: currentUser.uid, authorName: currentUser.displayName, createdAt: serverTimestamp()
+            });
+            input.value = '';
+            // Hacky reload for inline
+            window.toggleComments(`comm-${targetId}`, true);
+        };
+
+        window.toggleComments = async (divId, forceOpen = false) => {
+            const div = document.getElementById(divId);
+            if(!div.classList.contains('hidden') && !forceOpen) {
+                div.classList.add('hidden');
+            } else {
+                div.classList.remove('hidden');
+                // Fetch inline
+                const postId = divId.replace('comm-', '');
+                const container = document.getElementById(`comm-list-${postId}`);
+                // Simple query for inline, still using client sort to avoid excessive index creation for now, but could be upgraded
+                const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'comments'), where("targetId", "==", postId));
+                const snap = await getDocs(q);
+                const comms = snap.docs.map(d => d.data());
+                comms.sort((a,b) => (a.createdAt?.seconds || 0) - (b.createdAt?.seconds || 0)); 
+                container.innerHTML = comms.map(c => `<p class="text-xs text-gray-300"><b>${escapeHtml(c.authorName)}</b>: ${escapeHtml(c.text)}</p>`).join('');
+            }
+        };
+
+        // --- NOTIFICATIONS & ACTIVITY ---
+        async function loadNotifications() {
+            // PRO FIX: Re-enable Server Side Ordering & Limit
+            const q = query(
+                collection(db, 'artifacts', appId, 'public', 'data', 'notifications'), 
+                where("targetUserId", "==", currentUser.uid),
+                orderBy("createdAt", "desc"),
+                limit(20)
+            );
+
+            onSnapshot(q, (snap) => {
+                const list = snap.docs.map(d => d.data());
+                const badge = document.getElementById('notif-badge');
+                const container = document.getElementById('notif-list');
+                
+                if(list.length > 0) {
+                    badge.classList.remove('hidden');
+                    container.innerHTML = list.map(n => `
+                        <div class="px-4 py-3 hover:bg-gray-800 border-b border-gray-800 last:border-0">
+                            <p class="text-sm text-gray-300">
+                                <span class="font-bold text-white">${escapeHtml(n.actorName)}</span> 
+                                ${n.type === 'follow' ? 'subscribed to you.' : `commented on "${escapeHtml(n.contentTitle || 'your post')}"`}
+                            </p>
+                            <p class="text-[10px] text-gray-500 mt-1">${timeAgo(n.createdAt)}</p>
+                        </div>
+                    `).join('');
+                } else {
+                    badge.classList.add('hidden');
+                    container.innerHTML = '<div class="p-4 text-center text-sm text-gray-500">No new activity.</div>';
+                }
+            }, (error) => {
+                console.error("Notification Error (Likely missing index):", error);
+            });
+        }
+
+        async function addNotification(targetUserId, type, contentTitle = "") {
+            try {
+                await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'notifications'), {
+                    targetUserId, type, contentTitle,
+                    actorId: currentUser.uid, actorName: currentUser.displayName,
+                    createdAt: serverTimestamp(), read: false
+                });
+            } catch(e) {}
+        }
+
+        window.toggleNotif = () => {
+            document.getElementById('notif-dropdown').classList.toggle('hidden');
+        };
+
+        // --- PLAYER & READER LOGIC ---
+        function loadVideoPlayer(video) {
+            updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'videos', video.id), { views: increment(1) });
+            document.getElementById('player-embed').innerHTML = video.embedCode;
+            document.getElementById('watch-title').textContent = video.title;
+            document.getElementById('watch-author').textContent = video.authorName;
+            document.getElementById('watch-author').onclick = () => window.navigateTo('profile', video.authorId);
+            document.getElementById('watch-desc').textContent = video.description;
+            document.getElementById('watch-like-count').textContent = video.likes || 0;
+            document.getElementById('watch-like-btn').onclick = () => window.toggleLike('videos', video.id);
+        }
+
+        function loadArticleReader(article) {
+            updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'posts', article.id), { views: increment(1) });
+            document.getElementById('read-title').textContent = article.title;
+            document.getElementById('read-meta').innerHTML = `By <span class="cursor-pointer hover:text-white hover:underline" onclick="window.navigateTo('profile','${article.authorId}')">${article.authorName}</span> • ${timeAgo(article.createdAt)}`;
+            document.getElementById('read-content').textContent = article.content;
+            document.getElementById('read-like-count').textContent = article.likes || 0;
+            document.getElementById('read-like-btn').onclick = () => window.toggleLike('posts', article.id);
+        }
+
+        // --- GLOBAL HELPERS ---
+        window.handleSearch = (val) => {
+            searchQuery = val;
+            if(window.innerWidth < 768) { 
+                // Mobile Search Logic
+                if(currentView !== 'home' && currentView !== 'articles' && currentView !== 'community') window.navigateTo('home');
+            }
+            refreshView();
+        };
+
+        window.toggleMobileSearch = () => {
+            const bar = document.getElementById('mobile-search-bar');
+            bar.classList.toggle('hidden');
+            if(!bar.classList.contains('hidden')) document.getElementById('mobile-search-input').focus();
+        };
+
+        window.toggleLike = async (col, id) => {
+            if(!currentUser) return alert("Login to like");
+            // Simple increment (Real app needs 'likes' subcollection to prevent double votes)
+            await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', col, id), { likes: increment(1) });
+            
+            // UI Update (Optimistic)
+            const el = document.getElementById(currentView === 'watch' ? 'watch-like-count' : (currentView === 'read' ? 'read-like-count' : null));
+            if(el) el.textContent = parseInt(el.textContent) + 1;
+        };
+
+        // --- STUDIO ---
+        window.switchStudioTab = (tab) => {
+            ['video','article','community'].forEach(t => {
+                document.getElementById(`studio-form-${t}`).classList.add('hidden');
+                document.getElementById(`studio-tab-${t}`).className = "flex-1 py-3 text-sm font-medium text-gray-400 hover:text-white transition-colors border-b-2 border-transparent";
+            });
+            document.getElementById(`studio-form-${tab}`).classList.remove('hidden');
+            document.getElementById(`studio-tab-${tab}`).className = "flex-1 py-3 text-sm font-medium text-white border-b-2 border-red-600";
+        };
+
+        window.publish = async (type) => {
+            if(!currentUser) return alert("Please login.");
+            const btn = document.getElementById(`btn-pub-${type}`);
+            btn.disabled = true; btn.textContent = "Publishing...";
+            
+            try {
+                if(type === 'video') {
+                    const title = document.getElementById('inp-vid-title').value;
+                    const url = document.getElementById('inp-vid-url').value;
+                    if(!title || !url) throw new Error("Missing fields");
+                    
+                    const ytMatch = url.match(/(?:youtube\.com\/.*v=|youtu\.be\/)([^"&?\/\s]{11})/);
+                    const embed = ytMatch ? `<iframe width="100%" height="100%" src="https://www.youtube.com/embed/${ytMatch[1]}" frameborder="0" allowfullscreen></iframe>` : url;
+                    
                     await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'videos'), {
-                        title, description: desc, embedCode, originalLink: rawUrl,
-                        likes: 0, views: 0, tags: [],
+                        title, description: document.getElementById('inp-vid-desc').value,
+                        embedCode: embed, originalLink: url,
                         authorId: currentUser.uid, authorName: currentUser.displayName,
-                        createdAt: serverTimestamp()
+                        likes: 0, views: 0, createdAt: serverTimestamp()
                     });
                     window.navigateTo('home');
-                } 
-                else if (type === 'article') {
-                    const title = document.getElementById('inp-art-title').value;
-                    const content = document.getElementById('inp-art-content').value;
-                    if(!title || !content) throw new Error("Title and content required");
-
+                } else if (type === 'article') {
                     await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'posts'), {
-                        title, content, likes: 0, views: 0,
+                        title: document.getElementById('inp-art-title').value,
+                        content: document.getElementById('inp-art-content').value,
                         authorId: currentUser.uid, authorName: currentUser.displayName,
-                        createdAt: serverTimestamp()
+                        likes: 0, views: 0, createdAt: serverTimestamp()
                     });
                     window.navigateTo('articles');
-                }
-                else if (type === 'community') {
-                    const content = document.getElementById('inp-comm-text').value;
-                    const imageUrl = document.getElementById('inp-comm-img').value;
-                    if(!content) throw new Error("Message required");
-
+                } else if (type === 'community') {
                     await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'community'), {
-                        content, imageUrl, likes: 0,
+                        content: document.getElementById('inp-comm-text').value,
+                        imageUrl: document.getElementById('inp-comm-img').value,
                         authorId: currentUser.uid, authorName: currentUser.displayName,
-                        createdAt: serverTimestamp()
+                        likes: 0, createdAt: serverTimestamp()
                     });
                     window.navigateTo('community');
                 }
-                // Clear forms
                 document.querySelectorAll('input, textarea').forEach(el => el.value = '');
-            } catch(e) {
-                alert(e.message);
-            } finally {
-                btn.disabled = false; btn.innerHTML = originalText;
-            }
+            } catch(e) { alert(e.message); }
+            finally { btn.disabled = false; btn.textContent = "Publish"; }
         };
 
-        // --- INTERACTION LOGIC ---
-        window.likeItem = async (collectionName, id) => {
-            if (!currentUser) return alert("Login to like.");
-            // Determine collection path based on logic (handling legacy 'posts' vs new naming)
-            let dbCol = collectionName;
-            if(collectionName === 'articles') dbCol = 'posts'; // map UI name to DB name
-
-            const itemRef = doc(db, 'artifacts', appId, 'public', 'data', dbCol, id);
-            // Optimistic update could go here, but sticking to atomic increment
-            await updateDoc(itemRef, { likes: increment(1) });
-        };
-
-        window.deleteItem = async (collectionName, id) => {
-            if(confirm("Delete this?")) {
-                let dbCol = collectionName;
-                if(collectionName === 'articles') dbCol = 'posts';
-                await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', dbCol, id));
-                refreshCurrentView(); // Force re-render just in case
-            }
-        };
-
-        // --- VIEWER LOGIC ---
-        async function loadVideoPlayer(id) {
-            const video = videos.find(v => v.id === id);
-            if(!video) return window.navigateTo('home');
-            
-            // Increment view
-            updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'videos', id), { views: increment(1) });
-
-            document.getElementById('player-container').innerHTML = video.embedCode;
-            document.getElementById('watch-title').textContent = video.title;
-            document.getElementById('watch-author').textContent = video.authorName;
-            document.getElementById('watch-desc').textContent = video.description;
-            document.getElementById('watch-date').textContent = timeAgo(video.createdAt);
-            document.getElementById('watch-like-count').textContent = video.likes || 0;
-            
-            // Set up buttons
-            const likeBtn = document.getElementById('watch-like-btn');
-            likeBtn.onclick = () => window.likeItem('videos', id);
-        }
-
-        async function loadArticleReader(id) {
-            const article = articles.find(a => a.id === id);
-            if(!article) return window.navigateTo('articles');
-
-             // Increment view
-            updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'posts', id), { views: increment(1) });
-
-            document.getElementById('read-title').textContent = article.title;
-            document.getElementById('read-meta').textContent = `By ${article.authorName} • ${timeAgo(article.createdAt)}`;
-            document.getElementById('read-content').textContent = article.content;
-            document.getElementById('read-like-count').textContent = article.likes || 0;
-
-            document.getElementById('read-like-btn').onclick = () => window.likeItem('articles', id);
-        }
-
-        // --- AUTH LOGIC ---
+        // --- AUTH UI ---
         window.handleAuth = async (isLogin) => {
             const email = document.getElementById('auth-email').value;
             const pass = document.getElementById('auth-pass').value;
-            const name = document.getElementById('auth-name').value; // Only for signup
-
             try {
-                if(isLogin) {
-                    await signInWithEmailAndPassword(auth, email, pass);
-                } else {
-                    if(!name) return alert("Username required");
+                if(isLogin) await signInWithEmailAndPassword(auth, email, pass);
+                else {
                     const cred = await createUserWithEmailAndPassword(auth, email, pass);
-                    await updateProfile(cred.user, { displayName: name });
+                    await updateProfile(cred.user, { displayName: document.getElementById('auth-name').value });
                 }
                 window.navigateTo('home');
-            } catch (e) {
-                alert(e.message);
-            }
+            } catch(e) { alert(e.message); }
         };
+        
         window.logout = () => { signOut(auth); window.navigateTo('home'); };
 
-        function updateAuthUI() {
+        function updateUI() {
             const container = document.getElementById('sidebar-user');
             if(currentUser) {
                 container.innerHTML = `
-                    <div class="flex items-center gap-3 px-2 mb-4">
+                    <div onclick="window.navigateTo('profile')" class="flex items-center gap-3 px-2 mb-4 cursor-pointer hover:bg-gray-800 p-2 rounded transition-colors">
                         <div class="w-8 h-8 rounded-full bg-red-600 text-white flex items-center justify-center font-bold">
                             ${(currentUser.displayName||'U')[0].toUpperCase()}
                         </div>
                         <div class="overflow-hidden">
                             <p class="text-sm font-medium text-white truncate">${currentUser.displayName}</p>
-                            <button onclick="window.logout()" class="text-xs text-gray-400 hover:text-white">Sign Out</button>
+                            <p class="text-[10px] text-gray-400">View Channel</p>
                         </div>
                     </div>
+                    <button onclick="window.logout()" class="w-full text-left text-xs text-gray-400 hover:text-white px-2">Sign Out</button>
                 `;
             } else {
-                container.innerHTML = `
-                    <button onclick="window.navigateTo('auth')" class="w-full bg-gray-800 border border-gray-700 text-white py-2 rounded-lg text-sm font-medium hover:bg-gray-700 flex items-center justify-center gap-2">
-                        <i data-lucide="log-in" class="w-4 h-4"></i> Sign In
-                    </button>
-                `;
+                container.innerHTML = `<button onclick="window.navigateTo('auth')" class="w-full bg-red-600 hover:bg-red-700 text-white py-2 rounded text-sm font-bold">Sign In</button>`;
             }
-            lucide.createIcons();
         }
 
-        // --- HELPERS ---
-        function toggleSidebar(forceState = null) {
+        // --- UTILS ---
+        window.toggleSidebar = (force) => {
             const sb = document.getElementById('sidebar');
-            const overlay = document.getElementById('sidebar-overlay');
-            const isHidden = sb.classList.contains('-translate-x-full');
-            
-            if (forceState !== null) {
-                if(forceState) {
-                    sb.classList.remove('-translate-x-full');
-                    overlay.classList.remove('hidden');
-                } else {
-                    sb.classList.add('-translate-x-full');
-                    overlay.classList.add('hidden');
-                }
+            const ov = document.getElementById('sidebar-overlay');
+            if(force !== undefined) {
+                if(force) { sb.classList.remove('-translate-x-full'); ov.classList.remove('hidden'); }
+                else { sb.classList.add('-translate-x-full'); ov.classList.add('hidden'); }
             } else {
                 sb.classList.toggle('-translate-x-full');
-                overlay.classList.toggle('hidden');
+                ov.classList.toggle('hidden');
             }
+        };
+
+        function timeAgo(t) {
+            if(!t) return 'Just now';
+            const s = Math.floor((new Date() - t.toDate())/1000);
+            if(s>31536000) return Math.floor(s/31536000)+'y ago';
+            if(s>2592000) return Math.floor(s/2592000)+'mo ago';
+            if(s>86400) return Math.floor(s/86400)+'d ago';
+            if(s>3600) return Math.floor(s/3600)+'h ago';
+            if(s>60) return Math.floor(s/60)+'m ago';
+            return 'Just now';
         }
-        window.toggleSidebar = toggleSidebar;
+        function escapeHtml(t) { return t ? t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;") : ''; }
 
-        function timeAgo(timestamp) {
-            if(!timestamp) return 'Just now';
-            const seconds = Math.floor((new Date() - timestamp.toDate()) / 1000);
-            let interval = seconds / 31536000;
-            if (interval > 1) return Math.floor(interval) + " years ago";
-            interval = seconds / 2592000;
-            if (interval > 1) return Math.floor(interval) + " months ago";
-            interval = seconds / 86400;
-            if (interval > 1) return Math.floor(interval) + " days ago";
-            interval = seconds / 3600;
-            if (interval > 1) return Math.floor(interval) + " hours ago";
-            interval = seconds / 60;
-            if (interval > 1) return Math.floor(interval) + " minutes ago";
-            return "Just now";
-        }
-        function escapeHtml(text) { return text ? text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;") : ''; }
-
-        // Start
-        window.addEventListener('load', () => window.navigateTo('home'));
-
+        window.onload = () => window.navigateTo('home');
     </script>
 </head>
 <body class="bg-gray-950 text-gray-100 font-sans overflow-x-hidden">
 
-    <!-- Mobile Sidebar Overlay -->
-    <div id="sidebar-overlay" onclick="toggleSidebar(false)" class="fixed inset-0 bg-black/50 z-40 hidden md:hidden glass"></div>
+    <!-- OVERLAYS -->
+    <div id="sidebar-overlay" onclick="window.toggleSidebar(false)" class="fixed inset-0 bg-black/50 z-40 hidden md:hidden backdrop-blur-sm"></div>
 
-    <!-- SIDEBAR NAVIGATION -->
-    <aside id="sidebar" class="fixed top-0 left-0 z-50 h-screen w-64 bg-gray-950 border-r border-gray-800 transform -translate-x-full md:translate-x-0 transition-transform duration-300 ease-in-out flex flex-col">
-        
-        <!-- Logo -->
-        <div class="h-16 flex items-center px-6 border-b border-gray-800">
+    <!-- SIDEBAR -->
+    <aside id="sidebar" class="fixed top-0 left-0 z-50 h-screen w-64 bg-gray-950 border-r border-gray-900 transform -translate-x-full md:translate-x-0 transition-transform duration-300 flex flex-col">
+        <div class="h-16 flex items-center px-6 border-b border-gray-900">
             <div class="flex items-center gap-2 cursor-pointer" onclick="window.navigateTo('home')">
-                <div class="bg-red-600 text-white p-1 rounded font-bold text-xs tracking-tighter">UT</div>
-                <h1 class="font-bold text-lg tracking-tight text-white">Uncensored<span class="text-red-600">Truth</span></h1>
+                <div class="bg-red-600 text-white p-1 rounded font-bold text-xs">UT</div>
+                <h1 class="font-bold text-lg text-white">Uncensored<span class="text-red-600">Truth</span></h1>
             </div>
         </div>
-
-        <!-- Navigation Links -->
         <nav class="flex-1 overflow-y-auto py-4 px-3 space-y-1">
-            <button onclick="window.navigateTo('home')" id="nav-home" class="nav-item w-full flex items-center gap-4 px-3 py-3 rounded-lg text-sm font-medium hover:bg-gray-800 transition-colors sidebar-active">
-                <i data-lucide="home" class="w-5 h-5"></i> Home
-            </button>
-            <button onclick="window.navigateTo('articles')" id="nav-articles" class="nav-item w-full flex items-center gap-4 px-3 py-3 rounded-lg text-sm font-medium text-gray-400 hover:bg-gray-800 hover:text-white transition-colors">
-                <i data-lucide="file-text" class="w-5 h-5"></i> Articles
-            </button>
-            <button onclick="window.navigateTo('community')" id="nav-community" class="nav-item w-full flex items-center gap-4 px-3 py-3 rounded-lg text-sm font-medium text-gray-400 hover:bg-gray-800 hover:text-white transition-colors">
-                <i data-lucide="users" class="w-5 h-5"></i> Community
-                <span class="ml-auto bg-red-600 text-[10px] text-white px-1.5 rounded-full">New</span>
-            </button>
-            
-            <div class="my-4 border-t border-gray-800"></div>
-            
-            <button onclick="window.navigateTo('studio')" id="nav-studio" class="nav-item w-full flex items-center gap-4 px-3 py-3 rounded-lg text-sm font-medium text-red-500 hover:bg-red-900/10 transition-colors">
-                <i data-lucide="plus-circle" class="w-5 h-5"></i> Create
-            </button>
-            <!--
-            <button onclick="window.navigateTo('profile')" id="nav-profile" class="nav-item w-full flex items-center gap-4 px-3 py-3 rounded-lg text-sm font-medium text-gray-400 hover:bg-gray-800 hover:text-white transition-colors">
-                <i data-lucide="user" class="w-5 h-5"></i> My Channel
-            </button>
-            -->
+            <button onclick="window.navigateTo('home')" id="nav-home" class="nav-item w-full flex items-center gap-4 px-3 py-3 rounded-lg text-sm font-medium sidebar-active"><i data-lucide="home" class="w-5 h-5"></i> Home</button>
+            <button onclick="window.navigateTo('articles')" id="nav-articles" class="nav-item w-full flex items-center gap-4 px-3 py-3 rounded-lg text-sm font-medium text-gray-400 hover:bg-gray-900"><i data-lucide="file-text" class="w-5 h-5"></i> Articles</button>
+            <button onclick="window.navigateTo('community')" id="nav-community" class="nav-item w-full flex items-center gap-4 px-3 py-3 rounded-lg text-sm font-medium text-gray-400 hover:bg-gray-900"><i data-lucide="users" class="w-5 h-5"></i> Community</button>
+            <div class="my-4 border-t border-gray-900"></div>
+            <button onclick="window.navigateTo('studio')" id="nav-studio" class="nav-item w-full flex items-center gap-4 px-3 py-3 rounded-lg text-sm font-medium text-red-500 hover:bg-red-900/10"><i data-lucide="plus-circle" class="w-5 h-5"></i> Create</button>
         </nav>
-
-        <!-- User Section (Bottom) -->
-        <div class="p-4 border-t border-gray-800" id="sidebar-user">
-            <!-- Injected by JS -->
-        </div>
+        <div class="p-4 border-t border-gray-900" id="sidebar-user"></div>
     </aside>
 
-    <!-- MAIN CONTENT AREA -->
-    <div class="md:ml-64 min-h-screen flex flex-col transition-all duration-300">
-        
-        <!-- Header -->
-        <header class="h-16 sticky top-0 z-30 bg-gray-950/80 backdrop-blur-md border-b border-gray-800 flex items-center justify-between px-4 md:px-8">
-            <div class="flex items-center gap-4">
-                <button onclick="toggleSidebar()" class="md:hidden text-gray-400 hover:text-white">
-                    <i data-lucide="menu" class="w-6 h-6"></i>
-                </button>
-                <!-- Search -->
-                <div class="hidden md:flex relative w-96">
-                    <input type="text" placeholder="Search UT..." class="w-full bg-gray-900 border border-gray-700 rounded-full py-2 pl-10 pr-4 text-sm focus:outline-none focus:border-red-600 focus:ring-1 focus:ring-red-600 transition-all">
+    <!-- CONTENT -->
+    <div class="md:ml-64 min-h-screen flex flex-col">
+        <!-- HEADER -->
+        <header class="h-16 sticky top-0 z-30 bg-gray-950/90 backdrop-blur border-b border-gray-900 flex items-center justify-between px-4">
+            <div class="flex items-center gap-4 flex-1">
+                <button onclick="window.toggleSidebar()" class="md:hidden text-white"><i data-lucide="menu" class="w-6 h-6"></i></button>
+                <!-- Desktop Search -->
+                <div class="hidden md:flex relative w-96 max-w-full">
+                    <input type="text" onkeyup="window.handleSearch(this.value)" placeholder="Search..." class="w-full bg-gray-900 border border-gray-800 rounded-full py-2 pl-10 pr-4 text-sm focus:border-red-600 outline-none">
                     <i data-lucide="search" class="absolute left-3 top-2.5 w-4 h-4 text-gray-500"></i>
                 </div>
             </div>
             
-            <div class="flex items-center gap-4">
-                <button class="text-gray-400 hover:text-white"><i data-lucide="bell" class="w-5 h-5"></i></button>
+            <div class="flex items-center gap-4 relative">
+                <!-- Mobile Search Toggle -->
+                <button onclick="window.toggleMobileSearch()" class="md:hidden text-white"><i data-lucide="search" class="w-5 h-5"></i></button>
+                <!-- Notification Bell -->
+                <div class="relative">
+                    <button onclick="window.toggleNotif()" class="text-gray-400 hover:text-white"><i data-lucide="bell" class="w-5 h-5"></i></button>
+                    <div id="notif-badge" class="hidden absolute -top-1 -right-1 w-2.5 h-2.5 bg-red-600 rounded-full border border-gray-950"></div>
+                    <!-- Dropdown -->
+                    <div id="notif-dropdown" class="hidden absolute right-0 top-10 w-72 bg-gray-900 border border-gray-800 rounded-xl shadow-xl overflow-hidden z-50">
+                        <div class="px-4 py-2 bg-gray-800 border-b border-gray-700 font-bold text-sm">Activity</div>
+                        <div id="notif-list" class="max-h-64 overflow-y-auto"></div>
+                    </div>
+                </div>
             </div>
         </header>
 
-        <!-- Dynamic Views -->
-        <main class="flex-grow p-4 md:p-8 max-w-7xl mx-auto w-full">
+        <!-- Mobile Search Bar -->
+        <div id="mobile-search-bar" class="hidden p-4 bg-gray-900 border-b border-gray-800 md:hidden">
+            <input id="mobile-search-input" type="text" onkeyup="window.handleSearch(this.value)" placeholder="Search UT..." class="w-full bg-black border border-gray-700 rounded-lg p-2 text-white outline-none focus:border-red-600">
+        </div>
 
-            <!-- 1. FEED VIEW (Videos, Articles, or Community) -->
+        <main class="flex-grow p-4 lg:p-6 w-full max-w-7xl mx-auto">
+            
+            <!-- FEED (HOME/BLOG/SOCIAL) -->
             <section id="view-feed" class="view-section">
-                <h2 id="feed-title" class="text-2xl font-bold mb-6 flex items-center">Recommended</h2>
+                <h2 id="feed-title" class="text-xl font-bold mb-6 flex items-center"></h2>
                 <div id="feed-grid"></div>
             </section>
 
-            <!-- 2. WATCH VIEW -->
+            <!-- PROFILE -->
+            <section id="view-profile" class="view-section hidden">
+                <div id="profile-header"></div>
+                <div id="profile-content" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4"></div>
+            </section>
+
+            <!-- WATCH VIDEO -->
             <section id="view-watch" class="view-section hidden">
                 <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
                     <div class="lg:col-span-2">
-                        <div id="player-container" class="aspect-video bg-black rounded-xl overflow-hidden shadow-2xl mb-4"></div>
+                        <div id="player-embed" class="aspect-video bg-black rounded-xl overflow-hidden shadow-2xl mb-4 flex items-center justify-center"></div>
                         <h1 id="watch-title" class="text-xl font-bold text-white mb-2"></h1>
                         <div class="flex items-center justify-between border-b border-gray-800 pb-4 mb-4">
                             <div class="flex items-center gap-3">
-                                <div class="w-10 h-10 rounded-full bg-gray-700 flex items-center justify-center font-bold" id="watch-avatar">UT</div>
-                                <div>
-                                    <h3 id="watch-author" class="font-medium text-white text-sm"></h3>
-                                    <p id="watch-date" class="text-xs text-gray-500"></p>
-                                </div>
+                                <h3 id="watch-author" class="font-medium text-white text-sm cursor-pointer hover:underline"></h3>
                             </div>
                             <button id="watch-like-btn" class="flex items-center gap-2 bg-gray-800 hover:bg-gray-700 px-4 py-2 rounded-full text-sm font-medium transition-colors">
                                 <i data-lucide="thumbs-up" class="w-4 h-4"></i> <span id="watch-like-count">0</span>
                             </button>
                         </div>
-                        <div class="bg-gray-900 p-4 rounded-xl text-sm text-gray-300 whitespace-pre-wrap" id="watch-desc"></div>
+                        <div class="bg-gray-900 p-4 rounded-xl text-sm text-gray-300 whitespace-pre-wrap mb-8" id="watch-desc"></div>
+                        
+                        <!-- Comments -->
+                        <h3 class="font-bold text-white mb-4">Comments</h3>
+                        <form onsubmit="window.postComment(event)" class="flex gap-2 mb-6">
+                            <input id="watch-comment-input" type="text" placeholder="Add a comment..." class="flex-1 bg-transparent border-b border-gray-700 focus:border-white outline-none py-2 text-sm text-white">
+                            <button type="submit" class="text-gray-400 hover:text-white text-sm font-medium">Comment</button>
+                        </form>
+                        <div id="watch-comments" class="space-y-4"></div>
                     </div>
-                    <!-- Sidebar recommendations could go here -->
                 </div>
             </section>
 
-            <!-- 3. READ VIEW -->
+            <!-- READ ARTICLE -->
             <section id="view-read" class="view-section hidden max-w-3xl mx-auto">
-                <button onclick="window.navigateTo('articles')" class="mb-6 text-gray-400 hover:text-white flex items-center gap-2 text-sm"><i data-lucide="arrow-left" class="w-4 h-4"></i> Back to Articles</button>
-                <article class="prose prose-invert prose-lg max-w-none">
+                <button onclick="window.navigateTo('articles')" class="mb-6 text-gray-500 hover:text-white flex items-center gap-2 text-sm"><i data-lucide="arrow-left" class="w-4 h-4"></i> Back</button>
+                <article>
                     <h1 id="read-title" class="text-3xl md:text-4xl font-bold text-white mb-4 leading-tight"></h1>
-                    <div class="flex items-center justify-between text-sm text-gray-400 mb-8 pb-8 border-b border-gray-800">
+                    <div class="flex items-center justify-between text-sm text-gray-400 mb-8 pb-4 border-b border-gray-800">
                         <span id="read-meta"></span>
-                        <button id="read-like-btn" class="flex items-center gap-2 text-gray-400 hover:text-red-500 transition-colors">
-                            <i data-lucide="heart" class="w-5 h-5"></i> <span id="read-like-count">0</span>
-                        </button>
+                        <button id="read-like-btn" class="flex items-center gap-2 text-gray-400 hover:text-red-500"><i data-lucide="heart" class="w-5 h-5"></i> <span id="read-like-count">0</span></button>
                     </div>
-                    <div id="read-content" class="whitespace-pre-wrap text-gray-300 leading-relaxed font-serif text-lg"></div>
+                    <div id="read-content" class="whitespace-pre-wrap text-gray-300 leading-relaxed font-serif text-lg mb-12"></div>
                 </article>
+                <!-- Comments -->
+                <div class="border-t border-gray-800 pt-8">
+                    <h3 class="font-bold text-white mb-4">Discussion</h3>
+                    <form onsubmit="window.postComment(event)" class="flex gap-2 mb-6">
+                        <input id="read-comment-input" type="text" placeholder="Share your thoughts..." class="flex-1 bg-gray-900 border border-gray-800 rounded px-4 py-2 text-sm text-white focus:border-blue-600 outline-none">
+                        <button type="submit" class="bg-blue-600 text-white px-4 py-2 rounded text-sm font-medium hover:bg-blue-700">Post</button>
+                    </form>
+                    <div id="read-comments" class="space-y-4"></div>
+                </div>
             </section>
 
-            <!-- 4. CREATOR STUDIO -->
+            <!-- STUDIO -->
             <section id="view-studio" class="view-section hidden max-w-2xl mx-auto">
-                <h2 class="text-3xl font-bold mb-8">Creator Studio</h2>
-                
+                <h2 class="text-2xl font-bold mb-6">Create Content</h2>
                 <div class="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
-                    <!-- Tabs -->
                     <div class="flex border-b border-gray-800">
-                        <button onclick="switchStudioTab('video')" id="studio-tab-video" class="flex-1 py-4 text-sm font-medium bg-gray-700 text-white transition-colors flex items-center justify-center gap-2">
-                            <i data-lucide="video" class="w-4 h-4"></i> Video
-                        </button>
-                        <button onclick="switchStudioTab('article')" id="studio-tab-article" class="flex-1 py-4 text-sm font-medium text-gray-400 hover:text-white hover:bg-gray-800 transition-colors flex items-center justify-center gap-2">
-                            <i data-lucide="file-text" class="w-4 h-4"></i> Article
-                        </button>
-                        <button onclick="switchStudioTab('community')" id="studio-tab-community" class="flex-1 py-4 text-sm font-medium text-gray-400 hover:text-white hover:bg-gray-800 transition-colors flex items-center justify-center gap-2">
-                            <i data-lucide="image" class="w-4 h-4"></i> Buzz
-                        </button>
+                        <button onclick="window.switchStudioTab('video')" id="studio-tab-video" class="flex-1 py-3 text-sm font-medium text-white border-b-2 border-red-600">Video</button>
+                        <button onclick="window.switchStudioTab('article')" id="studio-tab-article" class="flex-1 py-3 text-sm font-medium text-gray-400 border-b-2 border-transparent">Article</button>
+                        <button onclick="window.switchStudioTab('community')" id="studio-tab-community" class="flex-1 py-3 text-sm font-medium text-gray-400 border-b-2 border-transparent">Buzz</button>
                     </div>
-
                     <div class="p-6">
-                        <!-- Video Form -->
                         <div id="studio-form-video">
-                            <label class="block text-sm text-gray-400 mb-2">Video Title</label>
-                            <input id="inp-vid-title" type="text" class="w-full bg-gray-950 border border-gray-700 rounded-lg p-3 text-white focus:border-red-600 outline-none mb-4" placeholder="Enter title...">
-                            
-                            <label class="block text-sm text-gray-400 mb-2">YouTube URL</label>
-                            <input id="inp-vid-url" type="text" class="w-full bg-gray-950 border border-gray-700 rounded-lg p-3 text-white focus:border-red-600 outline-none mb-4" placeholder="https://youtube.com/watch?v=...">
-                            
-                            <label class="block text-sm text-gray-400 mb-2">Description</label>
-                            <textarea id="inp-vid-desc" rows="4" class="w-full bg-gray-950 border border-gray-700 rounded-lg p-3 text-white focus:border-red-600 outline-none mb-6" placeholder="Tell viewers about your video..."></textarea>
-                            
-                            <button id="btn-pub-video" onclick="publishContent('video')" class="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-3 rounded-lg transition-colors">Publish Video</button>
+                            <input id="inp-vid-title" class="w-full bg-gray-950 border border-gray-800 rounded p-3 mb-3 text-white" placeholder="Video Title">
+                            <input id="inp-vid-url" class="w-full bg-gray-950 border border-gray-800 rounded p-3 mb-3 text-white" placeholder="YouTube Link (e.g. https://youtu.be/...)">
+                            <textarea id="inp-vid-desc" class="w-full bg-gray-950 border border-gray-800 rounded p-3 mb-4 text-white" rows="3" placeholder="Description"></textarea>
+                            <button id="btn-pub-video" onclick="window.publish('video')" class="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-3 rounded">Publish Video</button>
                         </div>
-
-                        <!-- Article Form -->
                         <div id="studio-form-article" class="hidden">
-                            <label class="block text-sm text-gray-400 mb-2">Headline</label>
-                            <input id="inp-art-title" type="text" class="w-full bg-gray-950 border border-gray-700 rounded-lg p-3 text-white focus:border-blue-600 outline-none mb-4" placeholder="Catchy headline...">
-                            
-                            <label class="block text-sm text-gray-400 mb-2">Content</label>
-                            <textarea id="inp-art-content" rows="10" class="w-full bg-gray-950 border border-gray-700 rounded-lg p-3 text-white focus:border-blue-600 outline-none mb-6" placeholder="Write your truth..."></textarea>
-                            
-                            <button id="btn-pub-article" onclick="publishContent('article')" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-lg transition-colors">Publish Article</button>
+                            <input id="inp-art-title" class="w-full bg-gray-950 border border-gray-800 rounded p-3 mb-3 text-white" placeholder="Headline">
+                            <textarea id="inp-art-content" class="w-full bg-gray-950 border border-gray-800 rounded p-3 mb-4 text-white" rows="10" placeholder="Content..."></textarea>
+                            <button id="btn-pub-article" onclick="window.publish('article')" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded">Publish Article</button>
                         </div>
-
-                        <!-- Community Form -->
                         <div id="studio-form-community" class="hidden">
-                            <label class="block text-sm text-gray-400 mb-2">What's on your mind?</label>
-                            <textarea id="inp-comm-text" rows="3" class="w-full bg-gray-950 border border-gray-700 rounded-lg p-3 text-white focus:border-green-600 outline-none mb-4" placeholder="Share a quick thought..."></textarea>
-                            
-                            <label class="block text-sm text-gray-400 mb-2">Image URL (Optional)</label>
-                            <input id="inp-comm-img" type="text" class="w-full bg-gray-950 border border-gray-700 rounded-lg p-3 text-white focus:border-green-600 outline-none mb-6" placeholder="https://imgur.com/...">
-                            
-                            <button id="btn-pub-community" onclick="publishContent('community')" class="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 rounded-lg transition-colors">Post Buzz</button>
+                            <textarea id="inp-comm-text" class="w-full bg-gray-950 border border-gray-800 rounded p-3 mb-3 text-white" rows="3" placeholder="What's happening?"></textarea>
+                            <input id="inp-comm-img" class="w-full bg-gray-950 border border-gray-800 rounded p-3 mb-4 text-white" placeholder="Image URL (Optional)">
+                            <button id="btn-pub-community" onclick="window.publish('community')" class="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 rounded">Post Buzz</button>
                         </div>
                     </div>
                 </div>
             </section>
 
-            <!-- 5. AUTH VIEW -->
+            <!-- AUTH -->
             <section id="view-auth" class="view-section hidden flex items-center justify-center min-h-[60vh]">
-                <div class="bg-gray-900 p-8 rounded-xl border border-gray-800 shadow-2xl w-full max-w-md text-center">
-                    <div class="mb-6 flex justify-center"><i data-lucide="lock" class="w-12 h-12 text-red-600"></i></div>
-                    <h2 class="text-2xl font-bold mb-6">Access UT Network</h2>
-                    
-                    <input id="auth-name" type="text" placeholder="Username (Sign up only)" class="w-full bg-black border border-gray-700 rounded-lg p-3 mb-3 text-white focus:border-red-600 outline-none">
-                    <input id="auth-email" type="email" placeholder="Email Address" class="w-full bg-black border border-gray-700 rounded-lg p-3 mb-3 text-white focus:border-red-600 outline-none">
-                    <input id="auth-pass" type="password" placeholder="Password" class="w-full bg-black border border-gray-700 rounded-lg p-3 mb-6 text-white focus:border-red-600 outline-none">
-                    
+                <div class="bg-gray-900 p-8 rounded-xl border border-gray-800 w-full max-w-md text-center shadow-2xl">
+                    <h2 class="text-2xl font-bold mb-6">Welcome to UT</h2>
+                    <input id="auth-name" class="w-full bg-black border border-gray-700 rounded p-3 mb-3 text-white" placeholder="Username (Sign up only)">
+                    <input id="auth-email" class="w-full bg-black border border-gray-700 rounded p-3 mb-3 text-white" type="email" placeholder="Email">
+                    <input id="auth-pass" class="w-full bg-black border border-gray-700 rounded p-3 mb-6 text-white" type="password" placeholder="Password">
                     <div class="grid grid-cols-2 gap-4">
-                        <button onclick="handleAuth(true)" class="bg-gray-700 hover:bg-gray-600 text-white py-2 rounded-lg font-medium">Login</button>
-                        <button onclick="handleAuth(false)" class="bg-red-600 hover:bg-red-700 text-white py-2 rounded-lg font-medium">Sign Up</button>
+                        <button onclick="window.handleAuth(true)" class="bg-gray-700 text-white py-2 rounded">Login</button>
+                        <button onclick="window.handleAuth(false)" class="bg-red-600 text-white py-2 rounded">Sign Up</button>
                     </div>
                 </div>
             </section>
-
         </main>
     </div>
-
 </body>
 </html>
