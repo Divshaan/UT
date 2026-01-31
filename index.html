@@ -249,11 +249,9 @@
             let thumb = '', meta = '', action = '', type = '';
             if (item.type === 'videos') {
                 const url = item.customThumb || getThumbnail(item.originalLink||'');
-                // FALLBACK: If no URL found, show styled div
                 thumb = url ? 
                     `<img src="${url}" class="w-full h-full object-cover">` : 
                     `<div class="w-full h-full flex items-center justify-center bg-gradient-to-br from-gray-800 to-gray-900 border-r border-gray-700"><i data-lucide="play" class="w-8 h-8 text-gray-500"></i></div>`;
-                
                 meta = `${item.views||0} views • ${timeAgo(item.createdAt)}`;
                 action = `window.navigateTo('watch', '${item.id}')`;
                 type = 'Video';
@@ -472,23 +470,17 @@
 
         // --- RENDERERS ---
         function getThumbnail(url) {
-            // Updated to support YT and Dailymotion
             const ytMatch = url.match(/(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/);
             if(ytMatch) return `https://img.youtube.com/vi/${ytMatch[1]}/mqdefault.jpg`;
-            
             const dmMatch = url.match(/dailymotion.com\/video\/([a-zA-Z0-9]+)/);
             if(dmMatch) return `https://www.dailymotion.com/thumbnail/video/${dmMatch[1]}`;
-            
             return null;
         }
 
         function renderVideos(list, container, isOwner = false) {
             container.className = "grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4";
             container.innerHTML = list.length ? list.map(v => {
-                // AUTO FALLBACK SYSTEM
                 const thumbUrl = v.customThumb || getThumbnail(v.originalLink || '') || '';
-                
-                // If we have a URL, show image. If NOT, show cool gradient placeholder.
                 const thumbnail = thumbUrl ? 
                     `<img src="${thumbUrl}" class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300">` : 
                     `<div class="w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-gray-800 to-gray-900 group-hover:from-gray-700 group-hover:to-gray-800 transition-colors">
@@ -696,41 +688,70 @@
             finally { btn.disabled = false; btn.textContent = "Publish"; }
         };
 
-        // --- NOTIFICATIONS FIX ---
+        // --- NOTIFICATIONS FIX (Auto Clean + Click to Delete) ---
         async function loadNotifications() {
             const q = query(
                 collection(db, 'artifacts', appId, 'public', 'data', 'notifications'), 
                 where("targetUserId", "==", currentUser.uid),
                 orderBy("createdAt", "desc"),
-                limit(20)
+                limit(50) // Fetch more to check for old ones
             );
             onSnapshot(q, (snap) => {
-                const list = snap.docs.map(d => d.data());
-                // Show badge only if we have notifications. Real app would check 'read' status.
-                if(list.length > 0) document.getElementById('notif-badge').classList.remove('hidden'); 
+                const list = [];
+                const now = new Date();
+                const tenDaysMs = 10 * 24 * 60 * 60 * 1000;
+                let hasUnread = false;
+
+                snap.docs.forEach(docSnap => {
+                    const data = docSnap.data();
+                    
+                    // AUTO DELETE 10+ DAYS OLD
+                    if (data.createdAt && (now - data.createdAt.toDate()) > tenDaysMs) {
+                        deleteDoc(docSnap.ref); // Cleanup old
+                    } else {
+                        list.push({ id: docSnap.id, ...data });
+                        if(!data.read) hasUnread = true; // Simple unread check logic
+                    }
+                });
+
+                if (list.length > 0) document.getElementById('notif-badge').classList.remove('hidden'); 
+                else document.getElementById('notif-badge').classList.add('hidden');
                 
                 const container = document.getElementById('notif-list');
                 if(list.length > 0) {
                     container.innerHTML = list.map(n => `
-                        <div onclick="window.handleNotifClick('${n.type}', '${n.contentId}', '${n.contentType}', '${n.actorId}')" class="px-4 py-3 hover:bg-gray-800 border-b border-gray-800 last:border-0 cursor-pointer">
-                            <p class="text-sm text-gray-300">
-                                <span class="font-bold text-white">${escapeHtml(n.actorName)}</span> 
-                                ${n.type === 'follow' ? 'subscribed to you.' : `commented on "${escapeHtml(n.contentTitle || 'your post')}"`}
-                            </p>
-                            <p class="text-[10px] text-gray-500 mt-1">${timeAgo(n.createdAt)}</p>
+                        <div class="px-4 py-3 hover:bg-gray-800 border-b border-gray-800 last:border-0 relative group">
+                            <div onclick="window.handleNotifClick('${n.type}', '${n.contentId}', '${n.contentType}', '${n.actorId}')" class="cursor-pointer pr-6">
+                                <p class="text-sm text-gray-300">
+                                    <span class="font-bold text-white">${escapeHtml(n.actorName)}</span> 
+                                    ${n.type === 'follow' ? 'subscribed to you.' : `commented on "${escapeHtml(n.contentTitle || 'your post')}"`}
+                                </p>
+                                <p class="text-[10px] text-gray-500 mt-1">${timeAgo(n.createdAt)}</p>
+                            </div>
+                            <button onclick="window.deleteNotification(event, '${n.id}')" class="absolute right-2 top-3 text-gray-500 hover:text-white opacity-0 group-hover:opacity-100 transition-opacity p-1">
+                                <i data-lucide="x" class="w-3 h-3"></i>
+                            </button>
                         </div>
                     `).join('');
+                    lucide.createIcons();
                 } else {
                     container.innerHTML = '<div class="p-4 text-center text-sm text-gray-500">No new activity.</div>';
                 }
-            }, (e) => console.log("Notif error (index likely needed)", e));
+            }, (e) => console.log("Notif error", e));
         }
+
+        window.deleteNotification = async (e, id) => {
+            e.stopPropagation();
+            if(confirm("Clear this notification?")) {
+                await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'notifications', id));
+            }
+        };
 
         window.toggleNotif = () => {
             const dd = document.getElementById('notif-dropdown');
             dd.classList.toggle('hidden');
             if(!dd.classList.contains('hidden')) {
-                document.getElementById('notif-badge').classList.add('hidden'); // Clear badge
+                document.getElementById('notif-badge').classList.add('hidden'); // Clear badge on open
             }
         };
 
@@ -848,9 +869,8 @@
             <div class="flex items-center gap-4 flex-1">
                 <button onclick="window.toggleSidebar()" class="md:hidden text-white"><i data-lucide="menu" class="w-6 h-6"></i></button>
                 <div class="hidden md:flex relative w-96 max-w-full">
-                    <input id="search-input-desktop" type="text" onkeypress="window.handleSearchKey(event, this.value)" placeholder="Search..." class="w-full bg-gray-900 border border-gray-800 rounded-full py-2 pl-10 pr-10 text-sm focus:border-red-600 outline-none" autocomplete="off">
-                    <i data-lucide="search" class="absolute left-3 top-2.5 w-4 h-4 text-gray-500"></i>
-                    <button onclick="window.triggerSearch(document.getElementById('search-input-desktop').value)" class="absolute right-3 top-2 text-gray-400 hover:text-white"><i data-lucide="arrow-right" class="w-4 h-4"></i></button>
+                    <input id="search-input-desktop" type="text" onkeypress="window.handleSearchKey(event, this.value)" placeholder="Search..." class="w-full bg-gray-900 border border-gray-800 rounded-full py-2 pl-4 pr-10 text-sm focus:border-red-600 outline-none" autocomplete="off">
+                    <button onclick="window.triggerSearch(document.getElementById('search-input-desktop').value)" class="absolute right-3 top-2.5 text-gray-400 hover:text-white"><i data-lucide="search" class="w-4 h-4"></i></button>
                 </div>
             </div>
             <div class="flex items-center gap-4 relative">
