@@ -50,129 +50,16 @@
         let videos = [];
         let posts = [];
         let listenersStarted = false;
+        let profileTab = 'videos'; // 'videos', 'blog', 'about'
+        
         let searchTerm = "";
         let sortOption = "latest"; 
-
-        // --- GEMINI AI SETUP ---
-        const envApiKey = ""; // Environment key (if available)
-        
-        async function getGeminiKey() {
-            // Priority: LocalStorage (User provided) -> Env Variable -> Prompt User
-            let key = localStorage.getItem('ut_gemini_key');
-            if (key) return key;
-            if (envApiKey) return envApiKey;
-            
-            key = prompt("✨ To use AI features, please enter your Gemini API Key:");
-            if (key) {
-                localStorage.setItem('ut_gemini_key', key);
-                return key;
-            }
-            return null;
-        }
-
-        async function callGemini(prompt) {
-            const key = await getGeminiKey();
-            if (!key) return null;
-
-            try {
-                const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${key}`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
-                });
-                
-                if (!response.ok) throw new Error("API Error");
-                
-                const data = await response.json();
-                return data.candidates?.[0]?.content?.parts?.[0]?.text;
-            } catch (error) {
-                console.error("AI Error:", error);
-                alert("AI Request failed. Please check your API Key in Settings.");
-                return null;
-            }
-        }
-
-        // --- AI FEATURES ---
-
-        window.generateBlogDraft = async () => {
-            const title = document.getElementById('post-form-title').value;
-            if (!title) return alert("Please enter a Headline first.");
-            
-            const btn = document.getElementById('ai-draft-btn');
-            const originalText = btn.innerHTML;
-            btn.innerHTML = `<i data-lucide="loader-2" class="animate-spin w-4 h-4 mr-2"></i> Thinking...`;
-            btn.disabled = true;
-            lucide.createIcons();
-
-            const prompt = `Write a passionate, engaging, and uncensored blog post based on this headline: "${title}". Use plain text with paragraph breaks.`;
-            const result = await callGemini(prompt);
-
-            if (result) {
-                document.getElementById('post-form-content').value = result;
-            }
-
-            btn.innerHTML = originalText;
-            btn.disabled = false;
-            lucide.createIcons();
-        };
-
-        window.generateTags = async () => {
-            const title = document.getElementById('vid-title').value;
-            const desc = document.getElementById('vid-desc').value;
-            if (!title) return alert("Please enter a Title first.");
-
-            const btn = document.getElementById('ai-tag-btn');
-            const originalText = btn.innerHTML;
-            btn.innerHTML = `<i data-lucide="loader-2" class="animate-spin w-4 h-4 mr-2"></i>`;
-            btn.disabled = true;
-            lucide.createIcons();
-
-            const prompt = `Generate 5 relevant, comma-separated tags for a video titled "${title}" about: "${desc}". Return ONLY the comma-separated words, no hash symbols.`;
-            const result = await callGemini(prompt);
-
-            if (result) {
-                document.getElementById('vid-tags').value = result;
-            }
-
-            btn.innerHTML = originalText;
-            btn.disabled = false;
-            lucide.createIcons();
-        };
-
-        window.analyzeContent = async (type, title, content) => {
-            const container = document.getElementById('ai-analysis-result');
-            container.innerHTML = `<div class="flex items-center text-gray-400"><i data-lucide="loader-2" class="animate-spin w-4 h-4 mr-2"></i> Analyzing Truth...</div>`;
-            container.classList.remove('hidden');
-            lucide.createIcons();
-
-            const prompt = `Analyze this ${type} titled "${title}". Content/Context: "${content}". Provide a brief "Truth Summary" and 3 key takeaways. Format as HTML with <b>bold</b> points.`;
-            const result = await callGemini(prompt);
-
-            if (result) {
-                container.innerHTML = `
-                    <div class="bg-gray-800 border border-red-900/50 p-4 rounded-lg mt-4">
-                        <h4 class="text-red-400 font-bold flex items-center mb-2"><i data-lucide="sparkles" class="w-4 h-4 mr-2"></i> AI Truth Analysis</h4>
-                        <div class="text-gray-300 text-sm leading-relaxed">${result.replace(/\n/g, '<br>')}</div>
-                    </div>
-                `;
-                lucide.createIcons();
-            } else {
-                container.classList.add('hidden');
-            }
-        };
-
-        window.resetApiKey = () => {
-            const key = prompt("Enter new Gemini API Key:");
-            if(key) {
-                localStorage.setItem('ut_gemini_key', key);
-                alert("API Key saved!");
-            }
-        }
 
         // --- AUTH ---
         onAuthStateChanged(auth, (user) => {
             currentUser = user;
             updateUI();
+            
             const isAnonymous = user?.isAnonymous;
             if (user && !isAnonymous) {
                 document.getElementById('nav-user-section').classList.remove('hidden');
@@ -181,20 +68,28 @@
                 document.getElementById('nav-user-section').classList.add('hidden');
                 document.getElementById('nav-auth-section').classList.remove('hidden');
             }
-            if (!listenersStarted) { startDataListeners(); listenersStarted = true; }
+
+            if (!listenersStarted) {
+                startDataListeners();
+                listenersStarted = true;
+            }
         });
 
+        // --- DATA LISTENERS ---
         function startDataListeners() {
             onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'videos'), (snapshot) => {
                 videos = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                 refreshContent();
+                if(currentUser) renderProfile(); // Update profile stats if content changes
             });
             onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'posts'), (snapshot) => {
                 posts = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                 refreshContent();
+                if(currentUser) renderProfile();
             });
         }
 
+        // --- CONTENT PROCESSING ---
         function refreshContent() {
             let filteredVideos = videos.filter(v => {
                 const term = searchTerm.toLowerCase();
@@ -224,6 +119,127 @@
             });
         }
 
+        // --- PROFILE LOGIC ---
+        async function renderProfile() {
+            if(!currentUser) return;
+
+            // Calculate Stats
+            const myVideos = videos.filter(v => v.authorId === currentUser.uid);
+            const myPosts = posts.filter(p => p.authorId === currentUser.uid);
+            const totalViews = myVideos.reduce((acc, v) => acc + (v.views || 0), 0) + myPosts.reduce((acc, p) => acc + (p.views || 0), 0);
+            
+            // Get Followers count
+            let followerCount = 0;
+            try {
+                const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'follows'), where("followedId", "==", currentUser.uid));
+                const snap = await getDocs(q);
+                followerCount = snap.size;
+            } catch(e) {}
+
+            // Fetch User Bio (Stored in a separate collection or we just simulate for now since Auth doesn't hold bio)
+            // Ideally: await getDoc(doc(db, 'users', currentUser.uid))
+            
+            // Update Header
+            document.getElementById('profile-name').textContent = currentUser.displayName || 'User';
+            document.getElementById('profile-handle').textContent = `@${(currentUser.displayName || 'user').replace(/\s+/g, '').toLowerCase()}`;
+            document.getElementById('profile-stats').textContent = `${followerCount} subscribers • ${myVideos.length} videos • ${totalViews} views`;
+            document.getElementById('profile-avatar-letter').textContent = (currentUser.displayName || 'U')[0].toUpperCase();
+
+            // Render Content based on Tab
+            const grid = document.getElementById('profile-content-grid');
+            grid.innerHTML = '';
+
+            if (profileTab === 'videos') {
+                if(myVideos.length === 0) grid.innerHTML = '<div class="col-span-full text-center text-gray-500 py-10">No videos uploaded yet.</div>';
+                else {
+                    grid.innerHTML = myVideos.map(v => `
+                        <div class="bg-gray-800 rounded-lg overflow-hidden group relative">
+                            <div class="aspect-video bg-black flex items-center justify-center">
+                                <i data-lucide="play" class="text-gray-600"></i>
+                            </div>
+                            <div class="p-3">
+                                <h4 class="font-bold text-white truncate">${escapeHtml(v.title)}</h4>
+                                <div class="text-xs text-gray-400 mt-1 flex justify-between">
+                                    <span>${v.views||0} views</span>
+                                    <span>${new Date(v.createdAt?.toDate()).toLocaleDateString()}</span>
+                                </div>
+                            </div>
+                            <button onclick="window.deleteItem('videos', '${v.id}')" class="absolute top-2 right-2 bg-black/50 p-1.5 rounded text-white hover:bg-red-600 transition-colors">
+                                <i data-lucide="trash-2" class="w-4 h-4"></i>
+                            </button>
+                        </div>
+                    `).join('');
+                }
+            } else if (profileTab === 'blog') {
+                if(myPosts.length === 0) grid.innerHTML = '<div class="col-span-full text-center text-gray-500 py-10">No articles written yet.</div>';
+                else {
+                    grid.innerHTML = myPosts.map(p => `
+                        <div class="bg-gray-800 p-4 rounded-lg border border-gray-700 relative">
+                            <h4 class="font-bold text-white truncate pr-8">${escapeHtml(p.title)}</h4>
+                            <p class="text-sm text-gray-400 mt-2 line-clamp-2">${escapeHtml(p.content)}</p>
+                            <div class="text-xs text-gray-500 mt-3">${p.views||0} reads • ${p.likes||0} likes</div>
+                            <button onclick="window.deleteItem('posts', '${p.id}')" class="absolute top-4 right-4 text-gray-500 hover:text-red-500">
+                                <i data-lucide="trash-2" class="w-4 h-4"></i>
+                            </button>
+                        </div>
+                    `).join('');
+                }
+            } else if (profileTab === 'about') {
+                grid.innerHTML = `
+                    <div class="col-span-full bg-gray-800 p-6 rounded-lg">
+                        <h3 class="text-xl font-bold text-white mb-4">About</h3>
+                        <p class="text-gray-300 whitespace-pre-wrap">${currentUser.photoURL || "No bio added yet."} </p> 
+                        <div class="mt-6 pt-6 border-t border-gray-700 text-sm text-gray-400">
+                            <p>Joined ${currentUser.metadata.creationTime ? new Date(currentUser.metadata.creationTime).toLocaleDateString() : 'Unknown'}</p>
+                            <p>Email: ${currentUser.email}</p>
+                        </div>
+                    </div>
+                `;
+                // Note: We are hacking the 'photoURL' field to store the Bio for this simple prototype to avoid complex DB user tables.
+            }
+            lucide.createIcons();
+        }
+
+        window.switchProfileTab = (tab) => {
+            profileTab = tab;
+            // Update UI
+            document.querySelectorAll('.profile-tab-btn').forEach(btn => {
+                btn.classList.remove('border-b-2', 'border-white', 'text-white');
+                btn.classList.add('text-gray-400', 'border-transparent');
+            });
+            document.getElementById(`tab-${tab}`).classList.add('border-b-2', 'border-white', 'text-white');
+            document.getElementById(`tab-${tab}`).classList.remove('text-gray-400', 'border-transparent');
+            renderProfile();
+        }
+
+        window.openEditProfile = () => {
+            document.getElementById('edit-name').value = currentUser.displayName || "";
+            document.getElementById('edit-bio').value = currentUser.photoURL || ""; // Using photoURL as Bio storage hack
+            document.getElementById('edit-profile-modal').classList.remove('hidden');
+        }
+
+        window.closeEditProfile = () => {
+            document.getElementById('edit-profile-modal').classList.add('hidden');
+        }
+
+        window.saveProfile = async (e) => {
+            e.preventDefault();
+            const newName = document.getElementById('edit-name').value;
+            const newBio = document.getElementById('edit-bio').value;
+            
+            try {
+                await updateProfile(currentUser, {
+                    displayName: newName,
+                    photoURL: newBio // Storing Bio here for simplicity
+                });
+                closeEditProfile();
+                renderProfile(); // Refresh UI
+            } catch(err) {
+                alert("Error updating profile: " + err.message);
+            }
+        }
+
+        // --- GLOBAL HELPER FUNCTIONS ---
         window.setSearch = (val) => { searchTerm = val; refreshContent(); }
         window.setSort = (val) => { sortOption = val; refreshContent(); }
 
@@ -278,6 +294,95 @@
             } catch (err) { console.error(err); }
         };
 
+        // --- GEMINI AI SETUP ---
+        const envApiKey = ""; 
+        async function getGeminiKey() {
+            let key = localStorage.getItem('ut_gemini_key');
+            if (key) return key;
+            if (envApiKey) return envApiKey;
+            key = prompt("✨ To use AI features, please enter your Gemini API Key:");
+            if (key) { localStorage.setItem('ut_gemini_key', key); return key; }
+            return null;
+        }
+
+        async function callGemini(prompt) {
+            const key = await getGeminiKey();
+            if (!key) return null;
+            try {
+                const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${key}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
+                });
+                if (!response.ok) throw new Error("API Error");
+                const data = await response.json();
+                return data.candidates?.[0]?.content?.parts?.[0]?.text;
+            } catch (error) {
+                console.error("AI Error:", error);
+                alert("AI Request failed. Please check your API Key in Settings.");
+                return null;
+            }
+        }
+
+        window.generateBlogDraft = async () => {
+            const title = document.getElementById('post-form-title').value;
+            if (!title) return alert("Please enter a Headline first.");
+            const btn = document.getElementById('ai-draft-btn');
+            const originalText = btn.innerHTML;
+            btn.innerHTML = `<i data-lucide="loader-2" class="animate-spin w-4 h-4 mr-2"></i> Thinking...`;
+            btn.disabled = true;
+            lucide.createIcons();
+            const prompt = `Write a passionate, engaging, and uncensored blog post based on this headline: "${title}". Use plain text with paragraph breaks.`;
+            const result = await callGemini(prompt);
+            if (result) document.getElementById('post-form-content').value = result;
+            btn.innerHTML = originalText;
+            btn.disabled = false;
+            lucide.createIcons();
+        };
+
+        window.generateTags = async () => {
+            const title = document.getElementById('vid-title').value;
+            const desc = document.getElementById('vid-desc').value;
+            if (!title) return alert("Please enter a Title first.");
+            const btn = document.getElementById('ai-tag-btn');
+            const originalText = btn.innerHTML;
+            btn.innerHTML = `<i data-lucide="loader-2" class="animate-spin w-4 h-4 mr-2"></i>`;
+            btn.disabled = true;
+            lucide.createIcons();
+            const prompt = `Generate 5 relevant, comma-separated tags for a video titled "${title}" about: "${desc}". Return ONLY the comma-separated words, no hash symbols.`;
+            const result = await callGemini(prompt);
+            if (result) document.getElementById('vid-tags').value = result;
+            btn.innerHTML = originalText;
+            btn.disabled = false;
+            lucide.createIcons();
+        };
+
+        window.analyzeContent = async (type, title, content) => {
+            const container = document.getElementById('ai-analysis-result');
+            container.innerHTML = `<div class="flex items-center text-gray-400"><i data-lucide="loader-2" class="animate-spin w-4 h-4 mr-2"></i> Analyzing Truth...</div>`;
+            container.classList.remove('hidden');
+            lucide.createIcons();
+            const prompt = `Analyze this ${type} titled "${title}". Content/Context: "${content}". Provide a brief "Truth Summary" and 3 key takeaways. Format as HTML with <b>bold</b> points.`;
+            const result = await callGemini(prompt);
+            if (result) {
+                container.innerHTML = `
+                    <div class="bg-gray-800 border border-red-900/50 p-4 rounded-lg mt-4">
+                        <h4 class="text-red-400 font-bold flex items-center mb-2"><i data-lucide="sparkles" class="w-4 h-4 mr-2"></i> AI Truth Analysis</h4>
+                        <div class="text-gray-300 text-sm leading-relaxed">${result.replace(/\n/g, '<br>')}</div>
+                    </div>
+                `;
+                lucide.createIcons();
+            } else {
+                container.classList.add('hidden');
+            }
+        };
+
+        window.resetApiKey = () => {
+            const key = prompt("Enter new Gemini API Key:");
+            if(key) { localStorage.setItem('ut_gemini_key', key); alert("API Key saved!"); }
+        }
+
+        // --- RENDERERS ---
         function renderHome(items) {
             const container = document.getElementById('video-grid');
             if (items.length === 0) { container.innerHTML = '<div class="col-span-full text-center text-gray-500 py-10">No videos found.</div>'; return; }
@@ -334,7 +439,6 @@
             document.getElementById('video-author').textContent = video.authorName || 'Anonymous';
             document.getElementById('video-desc').textContent = video.description;
             
-            // Add AI Analysis Button for Videos
             document.getElementById('video-ai-section').innerHTML = `
                 <button onclick="window.analyzeContent('video', '${escapeHtml(video.title)}', '${escapeHtml(video.description || 'No description')}')" 
                         class="text-xs flex items-center text-red-400 hover:text-white border border-red-900 bg-red-900/20 px-3 py-1 rounded-full transition-colors">
@@ -363,7 +467,6 @@
             document.getElementById('post-meta').textContent = `By ${post.authorName || 'Anonymous'} • ${post.createdAt?.toDate ? new Date(post.createdAt.toDate()).toLocaleDateString() : 'Just now'}`;
             document.getElementById('post-content').textContent = post.content;
             
-            // Add AI Analysis Button for Posts
             document.getElementById('post-ai-section').innerHTML = `
                 <button onclick="window.analyzeContent('article', '${escapeHtml(post.title)}', '${escapeHtml(post.content.substring(0, 500))}')" 
                         class="text-xs flex items-center text-red-400 hover:text-white border border-red-900 bg-red-900/20 px-3 py-1 rounded-full transition-colors mb-4">
@@ -445,6 +548,7 @@
         window.navigateTo = (viewId) => {
             document.querySelectorAll('.view-section').forEach(el => el.classList.add('hidden'));
             document.getElementById(viewId).classList.remove('hidden');
+            if(viewId === 'account-view') renderProfile();
             lucide.createIcons();
         };
 
@@ -484,8 +588,17 @@
         }
         
         window.handleLogout = () => { signOut(auth); window.navigateTo('home-view'); }
+        
+        window.deleteItem = async (collectionName, id) => {
+            if(confirm("Delete this content permanently?")) {
+                try {
+                    await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', collectionName, id));
+                } catch(err) { alert("Error: " + err.message); }
+            }
+        }
+
         function escapeHtml(text) { return text ? text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;") : ''; }
-        function updateUI() { if(currentUser) { document.getElementById('account-name').textContent = currentUser.displayName || 'User'; document.getElementById('account-email').textContent = currentUser.email; } }
+        function updateUI() { if(currentUser) { /* handled by renderProfile */ } }
         lucide.createIcons();
     </script>
 </head>
@@ -679,11 +792,76 @@
             </div>
         </div>
 
-        <!-- 7. ACCOUNT VIEW -->
-        <div id="account-view" class="view-section hidden max-w-4xl mx-auto">
-             <div class="flex items-center justify-between mb-8 bg-gray-800 p-6 rounded-lg border border-gray-700">
-                <div><h1 id="account-name" class="text-2xl font-bold text-white">User</h1><p id="account-email" class="text-gray-400">user@example.com</p></div>
-                <button onclick="window.handleLogout()" class="border border-red-600 text-red-500 px-4 py-2 rounded hover:bg-red-600 hover:text-white">Sign Out</button>
+        <!-- 7. NEW ACCOUNT VIEW (YouTube Style) -->
+        <div id="account-view" class="view-section hidden w-full">
+            
+            <!-- Banner -->
+            <div class="h-32 md:h-48 w-full bg-gray-800 relative">
+                <!-- Optional: Image logic can be added later -->
+                <div class="absolute inset-0 bg-gradient-to-t from-gray-950 to-transparent"></div>
+            </div>
+
+            <!-- Profile Info -->
+            <div class="max-w-6xl mx-auto px-4 sm:px-6 relative -mt-12 mb-8">
+                <div class="flex flex-col md:flex-row items-center md:items-end">
+                    <!-- Avatar -->
+                    <div class="h-32 w-32 rounded-full border-4 border-gray-950 bg-red-600 flex items-center justify-center text-4xl font-bold text-white shadow-xl z-10">
+                        <span id="profile-avatar-letter">U</span>
+                    </div>
+                    
+                    <!-- Text Info -->
+                    <div class="md:ml-6 mt-4 md:mt-0 text-center md:text-left flex-1">
+                        <h1 id="profile-name" class="text-3xl font-bold text-white">User</h1>
+                        <div class="flex flex-col md:flex-row md:items-center text-gray-400 text-sm mt-1 space-y-1 md:space-y-0 md:space-x-2">
+                            <span id="profile-handle">@user</span>
+                            <span class="hidden md:inline">•</span>
+                            <span id="profile-stats">0 subscribers • 0 videos • 0 views</span>
+                        </div>
+                    </div>
+
+                    <!-- Actions -->
+                    <div class="mt-4 md:mt-0">
+                        <button onclick="window.openEditProfile()" class="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-white text-sm font-medium rounded-full border border-gray-700 transition-colors">
+                            Customize Channel
+                        </button>
+                        <button onclick="window.handleLogout()" class="ml-2 px-4 py-2 bg-gray-800 hover:bg-red-900/50 text-red-400 text-sm font-medium rounded-full border border-gray-700 transition-colors">
+                            Sign Out
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Tabs -->
+                <div class="flex space-x-8 border-b border-gray-800 mt-8 overflow-x-auto">
+                    <button onclick="window.switchProfileTab('videos')" id="tab-videos" class="profile-tab-btn px-2 py-3 text-sm font-medium border-b-2 border-white text-white">Videos</button>
+                    <button onclick="window.switchProfileTab('blog')" id="tab-blog" class="profile-tab-btn px-2 py-3 text-sm font-medium text-gray-400 border-b-2 border-transparent hover:text-white">Blog</button>
+                    <button onclick="window.switchProfileTab('about')" id="tab-about" class="profile-tab-btn px-2 py-3 text-sm font-medium text-gray-400 border-b-2 border-transparent hover:text-white">About</button>
+                </div>
+
+                <!-- Tab Content -->
+                <div id="profile-content-grid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6 py-8">
+                    <!-- Content injected via JS -->
+                </div>
+            </div>
+        </div>
+
+        <!-- EDIT PROFILE MODAL -->
+        <div id="edit-profile-modal" class="fixed inset-0 bg-black/80 hidden z-50 flex items-center justify-center p-4">
+            <div class="bg-gray-800 rounded-lg max-w-md w-full p-6 border border-gray-700">
+                <h3 class="text-xl font-bold text-white mb-4">Customize Channel</h3>
+                <form onsubmit="window.saveProfile(event)" class="space-y-4">
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-1">Display Name</label>
+                        <input id="edit-name" type="text" class="w-full bg-gray-900 border border-gray-600 rounded p-2 text-white">
+                    </div>
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-1">Bio / Description</label>
+                        <textarea id="edit-bio" rows="4" class="w-full bg-gray-900 border border-gray-600 rounded p-2 text-white" placeholder="Tell viewers about your channel..."></textarea>
+                    </div>
+                    <div class="flex justify-end space-x-2 mt-4">
+                        <button type="button" onclick="window.closeEditProfile()" class="px-4 py-2 text-gray-400 hover:text-white">Cancel</button>
+                        <button type="submit" class="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700">Save Changes</button>
+                    </div>
+                </form>
             </div>
         </div>
 
