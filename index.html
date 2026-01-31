@@ -4,6 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Uncensored Truth (UT)</title>
+    
+    <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = {
@@ -19,16 +21,25 @@
         }
     </script>
     <style>
+        /* Custom Scrollbar */
         ::-webkit-scrollbar { width: 8px; }
         ::-webkit-scrollbar-track { background: #030712; }
         ::-webkit-scrollbar-thumb { background: #374151; border-radius: 4px; }
+        
+        /* Utility Classes */
         .line-clamp-2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
         .sidebar-active { background-color: #1f2937; border-left: 3px solid #DC2626; color: white; }
+        
+        /* Embed Fix */
         .aspect-video iframe { width: 100% !important; height: 100% !important; border: none; }
+        
+        /* Filter Chips */
         .filter-chip { background-color: #1f2937; color: #d1d5db; }
         .filter-chip:hover { background-color: #374151; color: white; }
         .filter-chip.active { background-color: #DC2626; color: white; }
     </style>
+    
+    <!-- Lucide Icons -->
     <script src="https://unpkg.com/lucide@latest"></script>
 
     <!-- Firebase SDKs -->
@@ -37,6 +48,7 @@
         import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, updateProfile } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, collection, addDoc, onSnapshot, doc, deleteDoc, updateDoc, increment, serverTimestamp, query, where, getDocs, setDoc, getDoc, orderBy, limit } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
+        // --- CONFIGURATION ---
         const firebaseConfig = {
             apiKey: "AIzaSyAxBrWfKcq0GoK21-BeocsEbDdf24Q5mi8",
             authDomain: "uncensored-truth.firebaseapp.com",
@@ -52,11 +64,11 @@
         const db = getFirestore(app);
         const appId = 'uncensored-truth-live';
 
-        // --- STATE ---
+        // --- GLOBAL STATE ---
         let currentUser = null;
         let currentUserProfile = null; 
         let allContent = { videos: [], posts: [], community: [] };
-        let myFollows = new Set(); // Stores IDs of users I follow
+        let myFollows = new Set(); 
         let searchQuery = "";
         let searchFilter = "all";
         let globalSort = "latest"; 
@@ -65,14 +77,16 @@
         let viewedProfileId = null;
         let currentView = 'home';
 
-        // --- AUTH & INIT ---
+        // --- AUTH & INITIALIZATION ---
         onAuthStateChanged(auth, async (user) => {
             currentUser = user;
             if(user) {
+                // Load extended profile (bio, pic, username)
                 const userDoc = await getDoc(doc(db, 'artifacts', appId, 'public', 'data', 'users', user.uid));
                 if(userDoc.exists()) currentUserProfile = userDoc.data();
+                
                 loadNotifications();
-                loadMyFollows(); // Load who I follow
+                loadMyFollows(); 
             } else {
                 currentUserProfile = null;
                 myFollows = new Set();
@@ -80,31 +94,32 @@
             updateUI();
         });
 
-        // --- GLOBAL LISTENERS ---
-        // 1. Content Listeners
+        // --- DATA LISTENER (CONTENT) ---
         const collections = ['videos', 'posts', 'community'];
         collections.forEach(col => {
             const q = query(collection(db, 'artifacts', appId, 'public', 'data', col), orderBy('createdAt', 'desc'), limit(100));
+            
             onSnapshot(q, (snap) => {
                 allContent[col] = snap.docs.map(d => ({ id: d.id, type: col, ...d.data() }));
                 refreshCurrentView();
             }, (err) => {
-                // Fallback
+                // Fallback if index is missing
                 const fallbackQ = query(collection(db, 'artifacts', appId, 'public', 'data', col), limit(100));
                 onSnapshot(fallbackQ, (snap) => {
-                     allContent[col] = snap.docs.map(d => ({ id: d.id, type: col, ...d.data() })).sort((a,b) => (b.createdAt?.seconds||0) - (a.createdAt?.seconds||0));
+                     allContent[col] = snap.docs.map(d => ({ id: d.id, type: col, ...d.data() }))
+                        .sort((a,b) => (b.createdAt?.seconds||0) - (a.createdAt?.seconds||0));
                      refreshCurrentView();
                 });
             });
         });
 
-        // 2. My Follows Listener
+        // --- DATA LISTENER (FOLLOWS) ---
         function loadMyFollows() {
             if(!currentUser) return;
-            // Listen to follows collection where I am the follower
             const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'follows'), where("followerId", "==", currentUser.uid));
             onSnapshot(q, (snap) => {
                 myFollows = new Set(snap.docs.map(d => d.data().targetId));
+                // Update UI if on relevant pages
                 if(currentView === 'following' || currentView === 'profile') refreshCurrentView();
             });
         }
@@ -116,20 +131,26 @@
             else if (currentView === 'profile' && viewedProfileId) renderProfile(viewedProfileId);
         }
 
-        // --- NAVIGATION ---
+        // --- NAVIGATION ROUTER ---
         window.navigateTo = async (view, param = null) => {
             currentView = view;
             
+            // 1. Update Sidebar Active State
             document.querySelectorAll('.nav-item').forEach(el => {
                 el.classList.remove('sidebar-active', 'text-white');
                 el.classList.add('text-gray-400');
             });
             const active = document.getElementById(`nav-${view}`);
-            if(active) { active.classList.add('sidebar-active', 'text-white'); active.classList.remove('text-gray-400'); }
+            if(active) { 
+                active.classList.add('sidebar-active', 'text-white'); 
+                active.classList.remove('text-gray-400'); 
+            }
 
+            // 2. Hide all sections
             document.querySelectorAll('.view-section').forEach(el => el.classList.add('hidden'));
             document.getElementById('mobile-search-bar').classList.add('hidden');
 
+            // 3. Show requested section
             if(view === 'home' || view === 'articles' || view === 'community') {
                 document.getElementById('view-feed').classList.remove('hidden');
                 refreshFeed();
@@ -177,11 +198,13 @@
                     loadComments(param);
                 }
             }
+            
+            // 4. Utils
             lucide.createIcons();
             if(window.innerWidth < 768) toggleSidebar(false);
         };
 
-        // --- FEED LOGIC ---
+        // --- SORTING LOGIC ---
         function applySort(list) {
             let sorted = [...list];
             if (globalSort === 'latest') sorted.sort((a,b) => (b.createdAt?.seconds||0) - (a.createdAt?.seconds||0));
@@ -191,7 +214,10 @@
             return sorted;
         }
 
-        window.setGlobalSort = (val) => { globalSort = val; refreshFeed(); }
+        window.setGlobalSort = (val) => { 
+            globalSort = val; 
+            refreshFeed(); 
+        }
 
         function refreshFeed() {
             const grid = document.getElementById('feed-grid');
@@ -214,7 +240,7 @@
         function renderFollowingFeed() {
             const container = document.getElementById('following-feed');
             
-            // Combine all content types and filter by authorId
+            // Filter ALL content by author ID
             let myFeed = [
                 ...allContent.videos, 
                 ...allContent.posts, 
@@ -226,10 +252,10 @@
             if(myFeed.length === 0) {
                 container.innerHTML = `<div class="text-center py-20 text-gray-500">
                     <i data-lucide="user-x" class="w-12 h-12 mx-auto mb-4 opacity-50"></i>
-                    You aren't following anyone yet, or they haven't posted.<br>Explore content to find creators!
+                    Your following feed is empty.<br>Find creators to follow!
                 </div>`;
             } else {
-                container.innerHTML = myFeed.map(item => renderSearchCard(item)).join(''); // Reuse the search card layout for following feed
+                container.innerHTML = myFeed.map(item => renderSearchCard(item)).join(''); 
             }
             lucide.createIcons();
         }
@@ -237,9 +263,13 @@
         // --- SEARCH LOGIC ---
         window.handleSearchKey = (e, val) => { if(e.key === 'Enter') window.triggerSearch(val); }
         window.triggerSearch = (val) => { if(val && val.trim()) window.navigateTo('search', val); }
+        
         window.setSearchFilter = (filter) => {
             searchFilter = filter;
-            document.querySelectorAll('.filter-btn').forEach(b => { b.classList.remove('bg-gray-100', 'text-black'); b.classList.add('bg-gray-800', 'text-gray-300'); });
+            document.querySelectorAll('.filter-btn').forEach(b => { 
+                b.classList.remove('bg-gray-100', 'text-black'); 
+                b.classList.add('bg-gray-800', 'text-gray-300'); 
+            });
             document.getElementById(`filter-btn-${filter}`)?.classList.replace('bg-gray-800', 'bg-gray-100');
             document.getElementById(`filter-btn-${filter}`)?.classList.replace('text-gray-300', 'text-black');
             renderSearchResults();
@@ -249,6 +279,7 @@
             const container = document.getElementById('search-results');
             const q = searchQuery.toLowerCase();
             let results = [];
+            
             if(searchFilter === 'all') results = [...allContent.videos, ...allContent.posts, ...allContent.community];
             else if (searchFilter === 'videos') results = [...allContent.videos];
             else if (searchFilter === 'posts') results = [...allContent.posts];
@@ -266,7 +297,7 @@
             lucide.createIcons();
         }
 
-        // --- SHARED RENDERERS ---
+        // --- HELPER: THUMBNAILS ---
         function getThumbnail(url) {
             const ytMatch = url.match(/(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/);
             if(ytMatch) return `https://img.youtube.com/vi/${ytMatch[1]}/mqdefault.jpg`;
@@ -275,6 +306,7 @@
             return null;
         }
 
+        // --- RENDERERS ---
         function renderVideos(list, container, isOwner = false) {
             container.className = "grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4";
             container.innerHTML = list.length ? list.map(v => {
@@ -354,6 +386,7 @@
 
         function renderSearchCard(item) {
             let thumb = '', meta = '', action = '', type = '';
+            
             if (item.type === 'videos') {
                 const url = item.customThumb || getThumbnail(item.originalLink||'');
                 thumb = url ? `<img src="${url}" class="w-full h-full object-cover">` : `<div class="w-full h-full flex items-center justify-center bg-gray-800"><i data-lucide="play" class="w-8 h-8 text-gray-500"></i></div>`;
@@ -373,11 +406,18 @@
             }
             return `
                 <div onclick="${action}" class="flex flex-col sm:flex-row gap-4 cursor-pointer hover:bg-gray-900/50 p-2 rounded-lg transition-colors">
-                    <div class="w-full sm:w-64 aspect-video flex-shrink-0 rounded-lg overflow-hidden relative bg-black border border-gray-800">${thumb} <span class="absolute bottom-1 right-1 bg-black/80 text-white text-[10px] px-1 rounded">${type}</span></div>
+                    <div class="w-full sm:w-64 aspect-video flex-shrink-0 rounded-lg overflow-hidden relative bg-black border border-gray-800">
+                        ${thumb} <span class="absolute bottom-1 right-1 bg-black/80 text-white text-[10px] px-1 rounded">${type}</span>
+                    </div>
                     <div class="flex-1">
                         <h3 class="text-white font-medium text-lg mb-1 line-clamp-2">${escapeHtml(item.title || item.content)}</h3>
                         <div class="text-xs text-gray-400 mb-2">${meta}</div>
-                        <div class="flex items-center gap-2 mb-2"><div class="w-6 h-6 rounded-full bg-gray-700 flex items-center justify-center text-[10px] text-white overflow-hidden">${item.authorPic ? `<img src="${item.authorPic}" class="w-full h-full object-cover">` : (item.authorName||'U')[0].toUpperCase()}</div><span class="text-xs text-gray-400">${escapeHtml(item.authorName)}</span></div>
+                        <div class="flex items-center gap-2 mb-2">
+                            <div class="w-6 h-6 rounded-full bg-gray-700 flex items-center justify-center text-[10px] text-white overflow-hidden">
+                                ${item.authorPic ? `<img src="${item.authorPic}" class="w-full h-full object-cover">` : (item.authorName||'U')[0].toUpperCase()}
+                            </div>
+                            <span class="text-xs text-gray-400">${escapeHtml(item.authorName)}</span>
+                        </div>
                         <p class="text-sm text-gray-500 line-clamp-2">${escapeHtml(item.description || item.content)}</p>
                     </div>
                 </div>
@@ -402,8 +442,15 @@
             }
 
             if(!user) {
+                // Fallback for old users without profile doc
                 const anyContent = [...allContent.videos, ...allContent.posts].find(c => c.authorId === uid);
-                user = { displayName: anyContent ? anyContent.authorName : "User", username: "user", bio: "Welcome to my channel.", photoBase64: null, createdAt: anyContent ? anyContent.createdAt : null };
+                user = { 
+                    displayName: anyContent ? anyContent.authorName : "User", 
+                    username: "user", 
+                    bio: "Welcome to my channel.", 
+                    photoBase64: null, 
+                    createdAt: anyContent ? anyContent.createdAt : null 
+                };
             }
 
             let followers = 0;
@@ -411,7 +458,7 @@
             const fSnap = await getDocs(fQ);
             followers = fSnap.size;
             
-            // Check following status using global set
+            // Check follow status (Instant check via myFollows set)
             const isFollowing = currentUser && myFollows.has(uid);
             const isMe = currentUser && currentUser.uid === uid;
             const isVerified = followers > 10; 
@@ -464,14 +511,10 @@
             if(targetId === currentUser.uid) return alert("Can't follow yourself.");
             
             try {
-                // Check if already following based on local state for speed
                 const isFollowing = myFollows.has(targetId);
                 
-                // Optimistic UI update (optional but good for UX)
-                // We let the listener handle the actual UI refresh to be safe
-                
                 if (isFollowing) {
-                    // We need the doc ID to delete. Query it.
+                    // Unfollow
                     const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'follows'), 
                                     where("followerId", "==", currentUser.uid), where("targetId", "==", targetId));
                     const snap = await getDocs(q);
@@ -479,20 +522,30 @@
                         await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'follows', snap.docs[0].id));
                     }
                 } else {
+                    // Follow
                     await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'follows'), {
                         followerId: currentUser.uid, targetId: targetId, createdAt: serverTimestamp()
                     });
-                    // addNotification(targetId, 'follow'); // Optional
+                    
+                    // Add Notification to the target user (RESTORED FEATURE)
+                    await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'notifications'), {
+                        targetUserId: targetId,
+                        type: 'follow',
+                        actorId: currentUser.uid,
+                        actorName: currentUser.displayName,
+                        createdAt: serverTimestamp(),
+                        read: false
+                    });
                 }
             } catch (error) {
                 console.error("Follow Error:", error);
                 if (error.code === 'failed-precondition') {
-                    alert("System Update: Please check the browser console to create the required database index for Following.");
+                    alert("Admin: Check console to create required index.");
                 }
             }
         };
 
-        // --- EDIT PROFILE & IMAGE LOGIC ---
+        // --- EDIT PROFILE ---
         window.openEditProfile = (name, username, bio) => {
             document.getElementById('edit-modal').classList.remove('hidden');
             document.getElementById('edit-name').value = name;
@@ -501,7 +554,9 @@
             document.getElementById('edit-preview').src = ""; 
             document.getElementById('edit-preview-container').classList.add('hidden');
         };
+        
         window.closeEditModal = () => document.getElementById('edit-modal').classList.add('hidden');
+        
         window.previewImage = async (input) => {
             if (input.files && input.files[0]) {
                 const base64 = await compressImage(input.files[0]);
@@ -510,6 +565,7 @@
                 input.dataset.base64 = base64; 
             }
         };
+
         function compressImage(file) {
             return new Promise((resolve, reject) => {
                 const reader = new FileReader();
@@ -519,41 +575,60 @@
                     img.src = event.target.result;
                     img.onload = () => {
                         const canvas = document.createElement('canvas');
-                        const MAX_WIDTH = 300; const scaleSize = MAX_WIDTH / img.width;
-                        canvas.width = MAX_WIDTH; canvas.height = img.height * scaleSize;
-                        const ctx = canvas.getContext('2d'); ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                        const MAX_WIDTH = 300; 
+                        const scaleSize = MAX_WIDTH / img.width;
+                        canvas.width = MAX_WIDTH; 
+                        canvas.height = img.height * scaleSize;
+                        const ctx = canvas.getContext('2d'); 
+                        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
                         resolve(canvas.toDataURL('image/jpeg', 0.7)); 
                     };
                 };
                 reader.onerror = (error) => reject(error);
             });
         }
+
         window.saveProfileChanges = async (e) => {
             e.preventDefault();
             const btn = document.getElementById('save-profile-btn');
             btn.disabled = true; btn.innerText = "Saving...";
+            
             const name = document.getElementById('edit-name').value.trim();
             const username = document.getElementById('edit-username').value.trim().toLowerCase();
             const bio = document.getElementById('edit-bio').value.trim();
             const imgInput = document.getElementById('edit-img-input');
             const newPic = imgInput.dataset.base64 || null;
-            if(!username.match(/^[a-z0-9_]{3,15}$/)) { btn.disabled = false; btn.innerText = "Save"; return alert("Username must be 3-15 chars, lowercase letters/numbers only."); }
+
+            if(!username.match(/^[a-z0-9_]{3,15}$/)) { 
+                btn.disabled = false; btn.innerText = "Save"; 
+                return alert("Username must be 3-15 chars, lowercase letters/numbers only."); 
+            }
+
             try {
+                // Unique Username Check
                 if(username !== currentUserProfile?.username) {
                     const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'users'), where("username", "==", username));
                     const snap = await getDocs(q);
                     if(!snap.empty && snap.docs[0].id !== currentUser.uid) throw new Error("Username already taken.");
                 }
+
                 const userData = { displayName: name, username: username, bio: bio, updatedAt: serverTimestamp() };
                 if(newPic) userData.photoBase64 = newPic;
+                
                 await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'users', currentUser.uid), userData, { merge: true });
                 await updateProfile(currentUser, { displayName: name });
+                
                 currentUserProfile = { ...currentUserProfile, ...userData };
-                closeEditModal(); renderProfile(currentUser.uid);
-            } catch(err) { alert(err.message); } finally { btn.disabled = false; btn.innerText = "Save"; }
+                closeEditModal(); 
+                renderProfile(currentUser.uid);
+            } catch(err) { 
+                alert(err.message); 
+            } finally { 
+                btn.disabled = false; btn.innerText = "Save"; 
+            }
         };
 
-        // --- ACTIONS & UTILS ---
+        // --- CONTENT MANAGEMENT ---
         window.deleteContent = async (collectionName, id) => {
             if(!confirm("Delete this content?")) return;
             try {
@@ -563,7 +638,8 @@
                 else if (currentView === 'profile') renderProfile(currentUser.uid);
             } catch(e) { alert("Error deleting: " + e.message); }
         };
-        // Watch/Read Logic
+
+        // --- LOADERS ---
         function loadVideoPlayer(video) {
             updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'videos', video.id), { views: increment(1) });
             document.getElementById('player-embed').innerHTML = video.embedCode;
@@ -573,10 +649,15 @@
             document.getElementById('watch-desc').textContent = video.description;
             document.getElementById('watch-like-count').textContent = video.likes || 0;
             document.getElementById('watch-like-btn').onclick = () => window.toggleLike('videos', video.id);
+            
             const ownerActions = document.getElementById('watch-owner-actions');
-            if(currentUser && currentUser.uid === video.authorId) ownerActions.innerHTML = `<button onclick="window.deleteContent('videos', '${video.id}')" class="bg-red-900/30 text-red-400 px-3 py-1 rounded text-xs hover:bg-red-900/50">Delete Video</button>`;
-            else ownerActions.innerHTML = '';
+            if(currentUser && currentUser.uid === video.authorId) {
+                ownerActions.innerHTML = `<button onclick="window.deleteContent('videos', '${video.id}')" class="bg-red-900/30 text-red-400 px-3 py-1 rounded text-xs hover:bg-red-900/50">Delete Video</button>`;
+            } else {
+                ownerActions.innerHTML = '';
+            }
         }
+
         function loadArticleReader(article) {
             updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'posts', article.id), { views: increment(1) });
             document.getElementById('read-title').textContent = article.title;
@@ -585,37 +666,177 @@
             document.getElementById('read-like-count').textContent = article.likes || 0;
             document.getElementById('read-like-btn').onclick = () => window.toggleLike('posts', article.id);
         }
-        // Notification
+
+        // --- NOTIFICATIONS ---
         async function loadNotifications() {
-            const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'notifications'), where("targetUserId", "==", currentUser.uid), orderBy("createdAt", "desc"), limit(50));
+            const q = query(
+                collection(db, 'artifacts', appId, 'public', 'data', 'notifications'), 
+                where("targetUserId", "==", currentUser.uid), 
+                orderBy("createdAt", "desc"), 
+                limit(50)
+            );
+            
             onSnapshot(q, (snap) => {
-                const list = []; const now = new Date(); const tenDaysMs = 10 * 24 * 60 * 60 * 1000;
+                const list = []; 
+                const now = new Date(); 
+                const tenDaysMs = 10 * 24 * 60 * 60 * 1000;
+                
                 snap.docs.forEach(docSnap => {
                     const data = docSnap.data();
-                    if (data.createdAt && (now - data.createdAt.toDate()) > tenDaysMs) deleteDoc(docSnap.ref);
-                    else list.push({ id: docSnap.id, ...data });
+                    // Auto-delete if > 10 days
+                    if (data.createdAt && (now - data.createdAt.toDate()) > tenDaysMs) {
+                        deleteDoc(docSnap.ref);
+                    } else {
+                        list.push({ id: docSnap.id, ...data });
+                    }
                 });
-                if (list.length > 0) document.getElementById('notif-badge').classList.remove('hidden'); else document.getElementById('notif-badge').classList.add('hidden');
+
+                if (list.length > 0) document.getElementById('notif-badge').classList.remove('hidden'); 
+                else document.getElementById('notif-badge').classList.add('hidden');
+                
                 const container = document.getElementById('notif-list');
                 if(list.length > 0) {
-                    container.innerHTML = list.map(n => `<div class="px-4 py-3 hover:bg-gray-800 border-b border-gray-800 last:border-0 relative group"><div onclick="window.handleNotifClick('${n.type}', '${n.contentId}', '${n.contentType}', '${n.actorId}')" class="cursor-pointer pr-6"><p class="text-sm text-gray-300"><span class="font-bold text-white">${escapeHtml(n.actorName)}</span> ${n.type === 'follow' ? 'started following you.' : `commented on "${escapeHtml(n.contentTitle || 'your post')}"`}</p><p class="text-[10px] text-gray-500 mt-1">${timeAgo(n.createdAt)}</p></div><button onclick="window.deleteNotification(event, '${n.id}')" class="absolute right-2 top-3 text-gray-500 hover:text-white opacity-0 group-hover:opacity-100 transition-opacity p-1"><i data-lucide="x" class="w-3 h-3"></i></button></div>`).join('');
+                    container.innerHTML = list.map(n => `
+                        <div class="px-4 py-3 hover:bg-gray-800 border-b border-gray-800 last:border-0 relative group">
+                            <div onclick="window.handleNotifClick('${n.type}', '${n.contentId}', '${n.contentType}', '${n.actorId}')" class="cursor-pointer pr-6">
+                                <p class="text-sm text-gray-300">
+                                    <span class="font-bold text-white">${escapeHtml(n.actorName)}</span> 
+                                    ${n.type === 'follow' ? 'started following you.' : `commented on "${escapeHtml(n.contentTitle || 'your post')}"`}
+                                </p>
+                                <p class="text-[10px] text-gray-500 mt-1">${timeAgo(n.createdAt)}</p>
+                            </div>
+                            <button onclick="window.deleteNotification(event, '${n.id}')" class="absolute right-2 top-3 text-gray-500 hover:text-white opacity-0 group-hover:opacity-100 transition-opacity p-1">
+                                <i data-lucide="x" class="w-3 h-3"></i>
+                            </button>
+                        </div>
+                    `).join('');
                     lucide.createIcons();
-                } else container.innerHTML = '<div class="p-4 text-center text-sm text-gray-500">No new activity.</div>';
+                } else {
+                    container.innerHTML = '<div class="p-4 text-center text-sm text-gray-500">No new activity.</div>';
+                }
             });
         }
-        window.deleteNotification = async (e, id) => { e.stopPropagation(); if(confirm("Clear this notification?")) await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'notifications', id)); };
-        window.toggleNotif = () => { const dd = document.getElementById('notif-dropdown'); dd.classList.toggle('hidden'); if(!dd.classList.contains('hidden')) document.getElementById('notif-badge').classList.add('hidden'); };
-        window.handleNotifClick = (type, cId, cType, actorId) => { document.getElementById('notif-dropdown').classList.add('hidden'); if(type === 'follow') window.navigateTo('profile', actorId); else if (type === 'comment' && cId && cType) { if(cType === 'videos') window.navigateTo('watch', cId); else if (cType === 'posts') window.navigateTo('read', cId); } };
-        // Upload & Helpers
-        window.switchStudioTab = (t) => { ['video','article','community'].forEach(x => { document.getElementById(`studio-form-${x}`).classList.add('hidden'); document.getElementById(`studio-tab-${x}`).classList.replace('text-white','text-gray-400'); document.getElementById(`studio-tab-${x}`).classList.remove('border-red-600'); }); document.getElementById(`studio-form-${t}`).classList.remove('hidden'); document.getElementById(`studio-tab-${t}`).classList.replace('text-gray-400','text-white'); document.getElementById(`studio-tab-${t}`).classList.add('border-red-600'); };
-        window.toggleVideoInput = (m) => { if(m === 'link') { document.getElementById('inp-vid-url').classList.remove('hidden'); document.getElementById('inp-vid-embed').classList.add('hidden'); document.getElementById('inp-vid-thumb').classList.add('hidden'); } else { document.getElementById('inp-vid-url').classList.add('hidden'); document.getElementById('inp-vid-embed').classList.remove('hidden'); document.getElementById('inp-vid-thumb').classList.remove('hidden'); } };
-        window.handleAuth = async (isLogin) => { const e = document.getElementById('auth-email').value, p = document.getElementById('auth-pass').value; try { if(isLogin) await signInWithEmailAndPassword(auth, e, p); else { const c = await createUserWithEmailAndPassword(auth, e, p); await updateProfile(c.user, { displayName: document.getElementById('auth-name').value }); } window.navigateTo('home'); } catch(err) { alert(err.message); } };
+
+        window.deleteNotification = async (e, id) => { 
+            e.stopPropagation(); 
+            if(confirm("Clear this notification?")) {
+                await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'notifications', id));
+            }
+        };
+
+        window.toggleNotif = () => { 
+            const dd = document.getElementById('notif-dropdown'); 
+            dd.classList.toggle('hidden'); 
+            if(!dd.classList.contains('hidden')) document.getElementById('notif-badge').classList.add('hidden'); 
+        };
+
+        window.handleNotifClick = (type, cId, cType, actorId) => { 
+            document.getElementById('notif-dropdown').classList.add('hidden'); 
+            if(type === 'follow') window.navigateTo('profile', actorId); 
+            else if (type === 'comment' && cId && cType) { 
+                if(cType === 'videos') window.navigateTo('watch', cId); 
+                else if (cType === 'posts') window.navigateTo('read', cId); 
+            } 
+        };
+
+        // --- UPLOAD & INTERACTIONS ---
+        window.switchStudioTab = (t) => { 
+            ['video','article','community'].forEach(x => { 
+                document.getElementById(`studio-form-${x}`).classList.add('hidden'); 
+                document.getElementById(`studio-tab-${x}`).classList.replace('text-white','text-gray-400'); 
+                document.getElementById(`studio-tab-${x}`).classList.remove('border-red-600'); 
+            }); 
+            document.getElementById(`studio-form-${t}`).classList.remove('hidden'); 
+            document.getElementById(`studio-tab-${t}`).classList.replace('text-gray-400','text-white'); 
+            document.getElementById(`studio-tab-${t}`).classList.add('border-red-600'); 
+        };
+
+        window.toggleVideoInput = (m) => { 
+            if(m === 'link') { 
+                document.getElementById('inp-vid-url').classList.remove('hidden'); 
+                document.getElementById('inp-vid-embed').classList.add('hidden'); 
+                document.getElementById('inp-vid-thumb').classList.add('hidden'); 
+            } else { 
+                document.getElementById('inp-vid-url').classList.add('hidden'); 
+                document.getElementById('inp-vid-embed').classList.remove('hidden'); 
+                document.getElementById('inp-vid-thumb').classList.remove('hidden'); 
+            } 
+        };
+
+        window.handleAuth = async (isLogin) => { 
+            const e = document.getElementById('auth-email').value;
+            const p = document.getElementById('auth-pass').value;
+            try { 
+                if(isLogin) {
+                    await signInWithEmailAndPassword(auth, e, p);
+                } else { 
+                    const c = await createUserWithEmailAndPassword(auth, e, p); 
+                    // Init user doc on signup
+                    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'users', c.user.uid), {
+                        displayName: document.getElementById('auth-name').value,
+                        username: document.getElementById('auth-name').value.toLowerCase().replace(/\s/g, '_'),
+                        createdAt: serverTimestamp()
+                    });
+                    await updateProfile(c.user, { displayName: document.getElementById('auth-name').value }); 
+                } 
+                window.navigateTo('home'); 
+            } catch(err) { alert(err.message); } 
+        };
+
         window.logout = () => { signOut(auth); window.navigateTo('home'); };
-        window.toggleSidebar = (f) => { const s=document.getElementById('sidebar'), o=document.getElementById('sidebar-overlay'); if(f!==undefined) { f?(s.classList.remove('-translate-x-full'),o.classList.remove('hidden')):(s.classList.add('-translate-x-full'),o.classList.add('hidden')); } else { s.classList.toggle('-translate-x-full'); o.classList.toggle('hidden'); } };
-        window.toggleMobileSearch = () => { const b=document.getElementById('mobile-search-bar'); b.classList.toggle('hidden'); if(!b.classList.contains('hidden')) document.getElementById('mobile-search-input').focus(); };
-        window.toggleLike = async (c,id) => { if(!currentUser) return alert("Login needed"); await updateDoc(doc(db,'artifacts',appId,'public','data',c,id),{likes:increment(1)}); const el=document.getElementById(currentView==='watch'?'watch-like-count':(currentView==='read'?'read-like-count':null)); if(el) el.innerText=parseInt(el.innerText)+1; };
-        function timeAgo(t) { if(!t) return 'Just now'; const s=Math.floor((new Date()-t.toDate())/1000); if(s>31536000)return Math.floor(s/31536000)+'y'; if(s>86400)return Math.floor(s/86400)+'d'; if(s>3600)return Math.floor(s/3600)+'h'; if(s>60)return Math.floor(s/60)+'m'; return 'Just now'; }
-        function escapeHtml(t) { return t?t.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"): ''; }
+
+        window.toggleSidebar = (f) => { 
+            const s=document.getElementById('sidebar'), o=document.getElementById('sidebar-overlay'); 
+            if(f!==undefined) { 
+                f ? (s.classList.remove('-translate-x-full'),o.classList.remove('hidden')) : (s.classList.add('-translate-x-full'),o.classList.add('hidden')); 
+            } else { 
+                s.classList.toggle('-translate-x-full'); o.classList.toggle('hidden'); 
+            } 
+        };
+
+        window.toggleMobileSearch = () => { 
+            const b=document.getElementById('mobile-search-bar'); 
+            b.classList.toggle('hidden'); 
+            if(!b.classList.contains('hidden')) document.getElementById('mobile-search-input').focus(); 
+        };
+
+        window.toggleLike = async (c,id) => { 
+            if(!currentUser) return alert("Login needed"); 
+            await updateDoc(doc(db,'artifacts',appId,'public','data',c,id),{likes:increment(1)}); 
+            const el = document.getElementById(currentView==='watch'?'watch-like-count':(currentView==='read'?'read-like-count':null)); 
+            if(el) el.innerText = parseInt(el.innerText)+1; 
+        };
+
+        function updateUI() {
+            if(currentUser) {
+                document.getElementById('sidebar-user').innerHTML = `
+                    <div onclick="window.navigateTo('profile')" class="flex items-center gap-3 px-2 mb-4 cursor-pointer hover:bg-gray-800 p-2 rounded transition-colors">
+                        <div class="w-8 h-8 rounded-full bg-red-600 text-white flex items-center justify-center font-bold overflow-hidden">
+                            ${currentUserProfile?.photoBase64 ? `<img src="${currentUserProfile.photoBase64}" class="w-full h-full object-cover">` : (currentUser.displayName||'U')[0].toUpperCase()}
+                        </div>
+                        <div class="overflow-hidden">
+                            <p class="text-sm font-medium text-white truncate">${currentUser.displayName}</p>
+                            <p class="text-[10px] text-gray-400">View Channel</p>
+                        </div>
+                    </div>
+                    <button onclick="window.logout()" class="w-full text-left text-xs text-gray-400 hover:text-white px-2">Sign Out</button>
+                `;
+            } else {
+                document.getElementById('sidebar-user').innerHTML = `<button onclick="window.navigateTo('auth')" class="w-full bg-red-600 hover:bg-red-700 text-white py-2 rounded text-sm font-bold">Sign In</button>`;
+            }
+        }
+
+        // --- TIME FORMATTER ---
+        function timeAgo(t) { 
+            if(!t) return 'Just now'; 
+            const s = Math.floor((new Date() - t.toDate())/1000); 
+            if(s>31536000) return Math.floor(s/31536000)+'y'; 
+            if(s>86400) return Math.floor(s/86400)+'d'; 
+            if(s>3600) return Math.floor(s/3600)+'h'; 
+            if(s>60) return Math.floor(s/60)+'m'; 
+            return 'Just now'; 
+        }
+        function escapeHtml(t) { return t ? t.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;") : ''; }
 
         window.onload = () => window.navigateTo('home');
     </script>
@@ -629,7 +850,10 @@
             <form onsubmit="window.saveProfileChanges(event)">
                 <div class="flex justify-center mb-6">
                     <div class="relative group cursor-pointer" onclick="document.getElementById('edit-img-input').click()">
-                        <div class="w-24 h-24 rounded-full bg-gray-800 border-2 border-gray-700 flex items-center justify-center overflow-hidden"><i data-lucide="camera" class="w-8 h-8 text-gray-400"></i><div id="edit-preview-container" class="absolute inset-0 hidden"><img id="edit-preview" class="w-full h-full object-cover"></div></div>
+                        <div class="w-24 h-24 rounded-full bg-gray-800 border-2 border-gray-700 flex items-center justify-center overflow-hidden">
+                            <i data-lucide="camera" class="w-8 h-8 text-gray-400"></i>
+                            <div id="edit-preview-container" class="absolute inset-0 hidden"><img id="edit-preview" class="w-full h-full object-cover"></div>
+                        </div>
                         <div class="absolute inset-0 bg-black/50 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"><span class="text-xs font-medium">Change</span></div>
                     </div>
                     <input type="file" id="edit-img-input" class="hidden" accept="image/*" onchange="window.previewImage(this)">
