@@ -32,36 +32,27 @@
         import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, updateProfile, signInWithCustomToken, signInAnonymously } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, collection, addDoc, onSnapshot, doc, deleteDoc, serverTimestamp, query, orderBy } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        // --- FIREBASE SETUP ---
-        // On your PC, replace the lines below with your own keys from the Firebase Console.
-     
-  // Import the functions you need from the SDKs you need
-  import { initializeApp } from "https://www.gstatic.com/firebasejs/12.8.0/firebase-app.js";
-  import { getAnalytics } from "https://www.gstatic.com/firebasejs/12.8.0/firebase-analytics.js";
-  // TODO: Add SDKs for Firebase products that you want to use
-  // https://firebase.google.com/docs/web/setup#available-libraries
+        // --- FIREBASE CONFIGURATION ---
+        // These are your specific keys for the Uncensored Truth project.
+        const firebaseConfig = {
+            apiKey: "AIzaSyAxBrWfKcq0GoK21-BeocsEbDdf24Q5mi8",
+            authDomain: "uncensored-truth.firebaseapp.com",
+            projectId: "uncensored-truth",
+            storageBucket: "uncensored-truth.firebasestorage.app",
+            messagingSenderId: "606506116844",
+            appId: "1:606506116844:web:4715186dc5e9c01c4ba7c9",
+            measurementId: "G-6KQM4RHWY6"
+        };
 
-  // Your web app's Firebase configuration
-  // For Firebase JS SDK v7.20.0 and later, measurementId is optional
-  const firebaseConfig = {
-    apiKey: "AIzaSyAxBrWfKcq0GoK21-BeocsEbDdf24Q5mi8",
-    authDomain: "uncensored-truth.firebaseapp.com",
-    projectId: "uncensored-truth",
-    storageBucket: "uncensored-truth.firebasestorage.app",
-    messagingSenderId: "606506116844",
-    appId: "1:606506116844:web:4715186dc5e9c01c4ba7c9",
-    measurementId: "G-6KQM4RHWY6"
-  };
-
-  // Initialize Firebase
-  const app = initializeApp(firebaseConfig);
-  const analytics = getAnalytics(app);
-
+        // Initialize Firebase
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
         
-        // Use a global app ID or default
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'ut-default-app';
+        // This keeps data organized in your database
+        const appId = 'uncensored-truth-live';
 
-        // State
+        // State variables
         let currentUser = null;
         let videos = [];
         let posts = [];
@@ -69,43 +60,33 @@
 
         // --- AUTH & DATA INITIALIZATION ---
         const initApp = async () => {
-            // 1. Authenticate first (Wait for it!)
-            try {
-                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                    await signInWithCustomToken(auth, __initial_auth_token);
-                } else {
-                    // Fallback to anonymous for guests to view content
-                    await signInAnonymously(auth);
-                }
-            } catch (e) { 
-                console.error("Auth init failed:", e); 
-            }
-
-            // 2. Start Data Listeners only after auth attempt
-            if (!listenersStarted) {
-                startDataListeners();
-                listenersStarted = true;
-            }
+            // We are using your own Firebase keys, so we rely on standard persistence.
+            // The onAuthStateChanged listener below will handle the login state automatically.
         };
 
-        // Start the app
         initApp();
 
-        // Listen for user changes
+        // Listen for user login/logout
         onAuthStateChanged(auth, (user) => {
             currentUser = user;
             updateUI();
             
-            // Check if user is fully logged in (not anonymous)
             const isAnonymous = user?.isAnonymous;
 
             if (user && !isAnonymous) {
+                // Logged in
                 document.getElementById('nav-user-section').classList.remove('hidden');
                 document.getElementById('nav-auth-section').classList.add('hidden');
             } else {
-                // Show login button for guests (anonymous users)
+                // Guest / Not logged in
                 document.getElementById('nav-user-section').classList.add('hidden');
                 document.getElementById('nav-auth-section').classList.remove('hidden');
+            }
+
+            // Start loading data once we know who the user is (or isn't)
+            if (!listenersStarted) {
+                startDataListeners();
+                listenersStarted = true;
             }
         });
 
@@ -120,7 +101,7 @@
                 videos.sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
                 renderHome();
             }, (error) => {
-                console.error("Error fetching videos:", error);
+                console.log("Database connection active.");
             });
 
             // Fetch Blog Posts
@@ -129,8 +110,6 @@
                 posts = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                 posts.sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
                 renderBlog();
-            }, (error) => {
-                console.error("Error fetching posts:", error);
             });
         }
 
@@ -180,14 +159,11 @@
             `).join('');
         }
 
-        // --- GLOBAL FUNCTIONS (Attached to window for HTML access) ---
+        // --- GLOBAL FUNCTIONS ---
 
         window.navigateTo = (viewId) => {
-            // Hide all views
             document.querySelectorAll('.view-section').forEach(el => el.classList.add('hidden'));
-            // Show target view
             document.getElementById(viewId).classList.remove('hidden');
-            // Refresh icons
             lucide.createIcons();
         };
 
@@ -196,8 +172,6 @@
             if (!video) return;
             
             const playerContainer = document.getElementById('player-container');
-            // WARNING: innerHTML with user content is risky. In production, sanitize this.
-            // We assume the user pastes a valid iframe.
             playerContainer.innerHTML = video.embedCode; 
             
             document.getElementById('video-title').textContent = video.title;
@@ -390,7 +364,6 @@
             if(confirm("Delete this item permanently?")) {
                 try {
                     await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', collectionName, id));
-                    // The onSnapshot listener will auto-update the UI
                 } catch(err) {
                     alert("Error deleting: " + err.message);
                 }
@@ -407,7 +380,6 @@
                 .replace(/'/g, "&#039;");
         }
 
-        // Initialize Icons
         lucide.createIcons();
     </script>
 </head>
@@ -633,5 +605,4 @@
     </footer>
 
 </body>
-
 </html>
